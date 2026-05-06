@@ -629,7 +629,7 @@
             );
         };
 
-        const MasterSummary = ({ groups, expenses, getMemberBalance, setSelectedId, setView, setGroups, setExpenses, setShowCurrPickerId, showCurrPickerId, handleRenameGroup, handleDeleteGroup, me, setShowExpModal }) => {
+        const MasterSummary = ({ groups, expenses, getMemberBalance, setSelectedId, setView, setGroups, setExpenses, setShowCurrPickerId, showCurrPickerId, handleRenameGroup, handleDeleteGroup, me, setShowExpModal, setEditingExpense }) => {
             const [openDropdownId, setOpenDropdownId] = useState(null);
             const [globalSettleData, setGlobalSettleData] = useState(null);
             const [localSettleEdits, setLocalSettleEdits] = useState([]); // [{gId, gName, curr, amt, maxAmt}]
@@ -2558,7 +2558,7 @@
                         </div>
                     </aside>
                     <main className="main-content">
-                        {view === 'summary' ? <MasterSummary groups={groups} expenses={expenses} getMemberBalance={getMemberBalance} setSelectedId={setSelectedId} setView={setView} setGroups={setGroups} setExpenses={setExpenses} setShowCurrPickerId={setShowCurrPickerId} showCurrPickerId={showCurrPickerId} handleRenameGroup={handleRenameGroup} handleDeleteGroup={handleDeleteGroup} me={me} setShowExpModal={setShowExpModal} /> : 
+                        {view === 'summary' ? <MasterSummary groups={groups} expenses={expenses} getMemberBalance={getMemberBalance} setSelectedId={setSelectedId} setView={setView} setGroups={setGroups} setExpenses={setExpenses} setShowCurrPickerId={setShowCurrPickerId} showCurrPickerId={showCurrPickerId} handleRenameGroup={handleRenameGroup} handleDeleteGroup={handleDeleteGroup} me={me} setShowExpModal={setShowExpModal} setEditingExpense={setEditingExpense} /> : 
                          view === 'friends' ? <FriendsView groups={groups} expenses={expenses} me={me} setView={setView} setSelectedId={setSelectedId} setGlobalSettleData={setGlobalSettleData} globalSettleData={globalSettleData} BalanceDisplay={BalanceDisplay} /> :
                          view === 'analytics' ? <Analytics expenses={expenses} groups={groups} me={me} /> : 
                          view === 'paymentHistory' ? <PaymentHistory expenses={expenses} groups={groups} me={me} /> : 
