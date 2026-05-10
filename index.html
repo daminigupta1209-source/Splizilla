@@ -42,8 +42,36 @@
         body { 
             background: var(--bg); 
             color: var(--t); 
-            overflow-x: hidden; 
-            transition: 0.3s all; 
+            overflow-x: hidden;
+            user-select: none;
+        }
+
+        .premium-confirm-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(8px);
+            z-index: 9999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            animation: fadeIn 0.3s ease-out;
+        }
+
+        .premium-confirm-card {
+            background: white;
+            width: 400px;
+            padding: 32px;
+            border-radius: 32px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+            text-align: center;
+            animation: slideUp 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            border: 1px solid rgba(255,255,255,0.8);
+        }
+    transition: 0.3s all; 
             min-height: 100vh;
             font-size: 13px;
             line-height: 1.5;
@@ -256,6 +284,25 @@
             transition: 0.3s all; 
         }
         .btn-green:hover { transform: translateY(-2px); box-shadow: 0 15px 30px rgba(16, 185, 129, 0.5); }
+        
+        .btn-red { 
+            background: linear-gradient(135deg, #EF4444 0%, #DC2626 100%); 
+            color: white; 
+            border: none; 
+            padding: 12px 24px; 
+            border-radius: 20px; 
+            font-weight: 900; 
+            font-size: 13px; 
+            cursor: pointer; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center;
+            gap: 12px;
+            box-shadow: 0 10px 25px -5px rgba(239, 68, 68, 0.4); 
+            transition: 0.3s all; 
+        }
+        .btn-red:hover { transform: translateY(-2px); box-shadow: 0 15px 30px rgba(239, 68, 68, 0.5); }
+
         
         .btn-pay {
             position: relative;
@@ -670,7 +717,21 @@
 
         const SearchableCurrencyPicker = ({ show, onClose, onSelect, current }) => {
             const [search, setSearch] = useState('');
-            const filtered = worldCurrencies.filter(curr => 
+            const [usage, setUsage] = useState(() => {
+                const saved = localStorage.getItem('divido_currency_usage');
+                return saved ? JSON.parse(saved) : { '₹': 100, '$': 50, '€': 30, '£': 20 }; // Sensible defaults
+            });
+
+            const sortedCurrencies = useMemo(() => {
+                return [...worldCurrencies].sort((a, b) => {
+                    const countA = usage[a.s] || 0;
+                    const countB = usage[b.s] || 0;
+                    if (countB !== countA) return countB - countA;
+                    return a.n.localeCompare(b.n); // Secondary sort by name
+                });
+            }, [usage]);
+
+            const filtered = sortedCurrencies.filter(curr => 
                 curr.n.toLowerCase().includes(search.toLowerCase()) || 
                 curr.c.toLowerCase().includes(search.toLowerCase()) ||
                 curr.s.toLowerCase().includes(search.toLowerCase())
@@ -681,14 +742,21 @@
                     const handleKey = (e) => {
                         if (e.key === 'Escape') onClose();
                         if (e.key === 'Enter' && filtered.length > 0) {
-                            onSelect(filtered[0].s);
-                            onClose();
+                            handleSelect(filtered[0].s);
                         }
                     };
                     window.addEventListener('keydown', handleKey);
                     return () => window.removeEventListener('keydown', handleKey);
                 }
             }, [show, filtered, onClose, onSelect]);
+
+            const handleSelect = (symbol) => {
+                const newUsage = { ...usage, [symbol]: (usage[symbol] || 0) + 1 };
+                setUsage(newUsage);
+                localStorage.setItem('divido_currency_usage', JSON.stringify(newUsage));
+                onSelect(symbol);
+                onClose();
+            };
 
             if (!show) return null;
 
@@ -711,7 +779,7 @@
                                 </div>
                             ) : (
                                 filtered.map(curr => (
-                                    <div key={curr.c} onClick={() => { onSelect(curr.s); onClose(); }} style={{
+                                    <div key={curr.c} onClick={() => handleSelect(curr.s)} style={{
                                         display:'flex', justifyContent:'space-between', alignItems:'center', padding:'14px 18px', borderRadius:'18px', border: current === curr.s ? '2px solid #10B981' : '1.5px solid #F1F5F9', background: current === curr.s ? '#ECFDF5' : 'white', cursor:'pointer', transition:'0.2s all'
                                     }}>
                                         <div style={{display:'flex', alignItems:'center', gap:'16px'}}>
@@ -802,7 +870,14 @@
             );
         };
 
-        const ActivityStudio = ({ expenses, groups, setExpenses, setEditingExpense, setShowExpModal, me, setShowConvertModalId, setGroups }) => {
+        const ActivityStudio = ({ expenses, groups, setExpenses, setEditingExpense, setShowExpModal, me, setShowConvertModalId, setGroups, deleteExpense, setSelectedId, setView }) => {
+            const [openDropdownId, setOpenDropdownId] = useState(null);
+            
+            useEffect(() => {
+                const closeDrop = () => setOpenDropdownId(null);
+                window.addEventListener('click', closeDrop);
+                return () => window.removeEventListener('click', closeDrop);
+            }, []);
             const [openExpId, setOpenExpId] = useState(null);
             const sorted = [...expenses].sort((a, b) => new Date(b.date) - new Date(a.date));
 
@@ -813,9 +888,8 @@
             }, []);
 
             const handleDelete = (id) => {
-                if (confirm('Delete this transaction forever? 🗑️')) {
-                    setExpenses(expenses.filter(e => e.id !== id));
-                }
+                // Remove the bulky confirm for a smoother undo experience
+                deleteExpense(id);
             };
 
             const handleEdit = (exp) => {
@@ -845,54 +919,67 @@
                                 {sorted.map((e, i) => {
                                     const g = groups.find(x => x.id === e.gId);
                                     if (e.isConversion) {
+                                        const rateMap = e.ratesUsed ? JSON.parse(e.ratesUsed) : { [e.fromCurr]: e.rate };
+                                        const rateStrings = Object.entries(rateMap)
+                                            .filter(([src, r]) => src !== e.toCurr)
+                                            .map(([src, r]) => `${src}➔${e.toCurr} @ ${r}`);
+
                                         return (
-                                            <div key={e.id} style={{
-                                                display:'flex', justifyContent:'space-between', alignItems:'center', padding:'24px 32px', 
-                                                borderBottom: i === sorted.length - 1 ? 'none' : '1px solid #F1F5F9',
-                                                background: 'linear-gradient(90deg, #FDFCFE 0%, #F5F3FF 100%)'
-                                            }}>
-                                                <div style={{display:'flex', alignItems:'center', gap:'20px'}}>
+                                            <div key={e.id} 
+                                                style={{
+                                                    display:'flex', justifyContent:'space-between', alignItems:'center', padding:'24px 32px', 
+                                                    borderBottom: i === sorted.length - 1 ? 'none' : '1px solid #F1F5F9',
+                                                    background: 'linear-gradient(90deg, #FDFCFE 0%, #F5F3FF 100%)',
+                                                    transition:'0.2s all'
+                                                }}
+                                                className="hover-bright"
+                                            >
+                                                <div 
+                                                    onClick={() => setShowConvertModalId(e.gId)}
+                                                    style={{display:'flex', alignItems:'center', gap:'20px', cursor:'pointer', flex:1}}
+                                                >
                                                     <div style={{width:'52px', height:'52px', borderRadius:'18px', background:'white', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'24px', border:'1.5px solid #DDD6FE', boxShadow:'0 4px 6px -1px rgba(0,0,0,0.05)'}}>💱</div>
                                                     <div>
-                                                        <div style={{fontSize:'16px', fontWeight:'900', color:'#5B21B6'}}>Currency Switched</div>
-                                                        <div style={{display:'flex', alignItems:'center', gap:'8px', marginTop:'4px'}}>
-                                                            <span style={{fontSize:'11px', fontWeight:'900', color:'var(--g)', textTransform:'uppercase'}}>{e.date}</span>
-                                                            <span style={{width:'3px', height:'3px', background:'var(--g)', borderRadius:'50%', opacity:0.3}}></span>
-                                                            <span style={{fontSize:'11px', fontWeight:'900', color: '#8B5CF6'}}>
-                                                                {g?.name || 'Group'} • {e.fromCurr} ➔ {e.toCurr}
-                                                            </span>
+                                                        <div style={{fontSize:'16px', fontWeight:'900', color:'#5B21B6', display:'flex', alignItems:'center', gap:'8px'}}>
+                                                            Normalized Ledger <span style={{fontSize:'12px', opacity:0.3}}>✏️</span>
+                                                        </div>
+                                                        <div style={{display:'flex', flexWrap:'wrap', gap:'6px', marginTop:'6px'}}>
+                                                            {rateStrings.map(rs => (
+                                                                <span key={rs} style={{fontSize:'10px', fontWeight:'950', background:'#EDE9FE', color:'#7C3AED', padding:'2px 8px', borderRadius:'6px'}}>
+                                                                    {rs}
+                                                                </span>
+                                                            ))}
                                                         </div>
                                                     </div>
                                                 </div>
-                                                <div style={{display:'flex', alignItems:'center', gap:'24px'}}>
-                                                    <div style={{textAlign:'right'}}>
-                                                        <div style={{fontSize:'12px', fontWeight:'950', color:'#6D28D9'}}>1 {e.fromCurr} = {e.rate} {e.toCurr}</div>
-                                                        <div style={{fontSize:'10px', fontWeight:'900', color:'var(--g)'}}>Updated by {e.paid === me ? 'You' : e.paid}</div>
-                                                    </div>
+                                                <div style={{display:'flex', alignItems:'center', gap:'24px', position:'relative', zIndex:10}} onClick={ev => ev.stopPropagation()}>
                                                     <div style={{display:'flex', alignItems:'center', gap:'8px'}}>
-                                                        <button onClick={() => setShowConvertModalId(e.gId)} style={{padding:'8px 16px', borderRadius:'10px', border:'1.5px solid #DDD6FE', background:'white', cursor:'pointer', fontSize:'12px', fontWeight:'900', color:'#6D28D9'}} className="hover-up-mini">Update Rate</button>
-                                                        <div className="dropdown" style={{position:'relative', cursor:'pointer', fontSize:'18px', padding:'2px', color:'#6D28D9'}} onClick={(ev) => { ev.stopPropagation(); setOpenExpId(openExpId === e.id ? null : e.id); }}>
+                                                        <div className="dropdown" style={{position:'relative', cursor:'pointer', fontSize:'18px', padding:'10px', color:'#6D28D9'}} onClick={(ev) => { ev.stopPropagation(); setOpenExpId(openExpId === e.id ? null : e.id); }}>
                                                             ⋮
-                                                            <div className="dropdown-content" style={{display: openExpId === e.id ? 'block' : 'none', right:0, top:'100%', minWidth:'100px'}}>
-                                                                <div onClick={() => setShowConvertModalId(e.gId)}>✏️ Edit Rate</div>
-                                                                <div onClick={() => { 
-                                                                    if(confirm(`Revert balances back to ${e.fromCurr} as well? 🔄\n\nThis will undo the math for all expenses in this group.`)) {
-                                                                        const r = 1 / (e.rate || 1);
-                                                                        setGroups(groups.map(g => String(g.id) === String(e.gId) ? {...g, currency: e.fromCurr} : g));
+                                                            <div className="dropdown-content" style={{display: openExpId === e.id ? 'block' : 'none', right:0, top:'100%', minWidth:'180px', zIndex:100}}>
+                                                                <div onClick={(ev) => { ev.stopPropagation(); setShowConvertModalId(e.gId); setOpenExpId(null); }}>⚙️ Adjust Conversion</div>
+                                                                <div onClick={(ev) => { 
+                                                                    ev.stopPropagation();
+                                                                    if(confirm(`Undo this conversion? 🔄\n\nThis will restore the exact state before this conversion.`)) {
+                                                                        const snapshotArr = e.snapshot ? JSON.parse(e.snapshot) : [];
+                                                                        const snapMap = {};
+                                                                        snapshotArr.forEach(s => { snapMap[s.id] = s; });
+
                                                                         setExpenses(prev => prev.map(x => {
-                                                                            if (String(x.gId) === String(e.gId) && !x.isConversion) {
-                                                                                const newShares = {};
-                                                                                if (x.mode === 'Unequally' && x.shares) {
-                                                                                    Object.entries(x.shares).forEach(([m, val]) => { newShares[m] = val * r; });
-                                                                                }
-                                                                                return { ...x, amt: x.amt * r, currency: e.fromCurr, shares: Object.keys(newShares).length > 0 ? newShares : x.shares };
+                                                                            if (snapMap[x.id]) {
+                                                                                const s = snapMap[x.id];
+                                                                                return { ...x, amt: s.amt, currency: s.currency, shares: s.shares };
                                                                             }
                                                                             return x;
                                                                         }).filter(x => x.id !== e.id));
-                                                                    } else if(confirm('Just delete the log entry?')) {
+                                                                        
+                                                                        const restoredCurr = e.fromCurr || (snapshotArr[0]?.currency) || '₹';
+                                                                        setGroups(groups.map(g => String(g.id) === String(e.gId) ? {...g, currency: restoredCurr} : g));
+                                                                    } else if(confirm('Just delete the log entry without undoing?')) {
                                                                         setExpenses(expenses.filter(x => x.id !== e.id));
                                                                     }
-                                                                }}>🗑️ Delete</div>
+                                                                    setOpenExpId(null);
+                                                                }}>🗑️ Delete Activity</div>
                                                             </div>
                                                         </div>
                                                     </div>
@@ -901,11 +988,11 @@
                                         );
                                     }
                                     return (
-                                        <div key={e.id} style={{
+                                        <div key={e.id} className="card hover-up-mini" onClick={() => { setEditingExpense(e); setShowExpModal(true); }} style={{
                                             display:'flex', justifyContent:'space-between', alignItems:'center', padding:'24px 32px', 
                                             borderBottom: i === sorted.length - 1 ? 'none' : '1px solid #F1F5F9',
-                                            transition: '0.2s all'
-                                        }} className="hover-up-mini">
+                                            transition: '0.2s all', cursor:'pointer', position:'relative'
+                                        }}>
                                             <div style={{display:'flex', alignItems:'center', gap:'20px'}}>
                                                 <div style={{width:'52px', height:'52px', borderRadius:'18px', background:'#F8FAFC', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'24px', border:'1px solid #F1F5F9'}}>
                                                     {e.category || getEmoji(e.title) || '⚡'}
@@ -915,7 +1002,7 @@
                                                     <div style={{display:'flex', alignItems:'center', gap:'8px', marginTop:'4px'}}>
                                                         <span style={{fontSize:'11px', fontWeight:'900', color:'var(--g)', textTransform:'uppercase'}}>{e.date}</span>
                                                         <span style={{width:'3px', height:'3px', background:'var(--g)', borderRadius:'50%', opacity:0.3}}></span>
-                                                        <span style={{fontSize:'11px', fontWeight:'900', color: e.gId === 'STANDALONE' ? '#F59E0B' : '#8B5CF6'}}>
+                                                        <span onClick={(ev) => { ev.stopPropagation(); if(e.gId !== 'STANDALONE') { setSelectedId(e.gId); setView('detail'); } }} style={{fontSize:'11px', fontWeight:'950', color: e.gId === 'STANDALONE' ? '#F59E0B' : '#8B5CF6', cursor:'pointer', hover:{textDecoration:'underline'}}}>
                                                             {e.gId === 'STANDALONE' ? '⚡ Standalone' : (g?.name || 'Legacy Ledger')}
                                                         </span>
                                                     </div>
@@ -923,12 +1010,19 @@
                                             </div>
                                             <div style={{display:'flex', alignItems:'center', gap:'24px'}}>
                                                 <div style={{textAlign:'right'}}>
-                                                    <div style={{fontSize:'18px', fontWeight:'950', color:'#0F172A'}}>{e.currency || '₹'}{parseFloat(e.amt).toLocaleString()}</div>
+                                                    <div style={{fontSize:'18px', fontWeight:'950', color:'#0F172A'}}>{e.currency || '₹'}{(parseFloat(e.amt) || 0).toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 2})}</div>
                                                     <div style={{fontSize:'10px', fontWeight:'900', color:'var(--g)'}}>Paid by {e.paid === me ? 'You' : e.paid}</div>
                                                 </div>
-                                                <div style={{display:'flex', gap:'8px'}}>
-                                                    <button onClick={() => handleEdit(e)} style={{width:'36px', height:'36px', borderRadius:'10px', border:'none', background:'#F1F5F9', cursor:'pointer', fontSize:'14px', transition:'0.2s', display:'flex', alignItems:'center', justifyContent:'center'}} className="hover-up">✏️</button>
-                                                    <button onClick={() => handleDelete(e.id)} style={{width:'36px', height:'36px', borderRadius:'10px', border:'none', background:'#FFF1F2', color:'#E11D48', cursor:'pointer', fontSize:'14px', transition:'0.2s', display:'flex', alignItems:'center', justifyContent:'center'}} className="hover-up">🗑️</button>
+                                                <div style={{display:'flex', gap:'12px'}}>
+                                                    <div className="dropdown" style={{position:'relative'}} onClick={(ev) => ev.stopPropagation()}>
+                                                        <div style={{fontSize:'24px', color:'var(--g)', padding:'4px', cursor:'pointer', opacity:0.4}} onClick={() => setOpenDropdownId(openDropdownId === e.id ? null : e.id)}>⋮</div>
+                                                        {openDropdownId === e.id && (
+                                                            <div className="card shadow-xl" style={{position:'absolute', right:0, top:'100%', background:'white', zIndex:100, minWidth:'120px', padding:'8px', borderRadius:'12px', border:'1.5px solid #F1F5F9'}}>
+                                                                <div onClick={() => { setEditingExpense(e); setShowExpModal(true); setOpenDropdownId(null); }} style={{padding:'10px 12px', fontSize:'12px', fontWeight:'800', cursor:'pointer', borderRadius:'8px'}} className="hover-bg">✏️ Edit</div>
+                                                                <div onClick={() => { if(confirm('Delete this activity?')) deleteExpense(e.id); setOpenDropdownId(null); }} style={{padding:'10px 12px', fontSize:'12px', fontWeight:'800', cursor:'pointer', color:'#DB2777', borderRadius:'8px'}} className="hover-bg">🗑️ Delete</div>
+                                                            </div>
+                                                        )}
+                                                    </div>
                                                 </div>
                                             </div>
                                         </div>
@@ -941,7 +1035,30 @@
             );
         };
 
-        const MasterSummary = ({ groups, expenses, getMemberBalance, setSelectedId, setView, setGroups, setExpenses, setShowCurrPickerId, showCurrPickerId, handleRenameGroup, handleDeleteGroup, me, setShowExpModal, setEditingExpense, globalSettleData, setGlobalSettleData }) => {
+        const PremiumConfirm = ({ show, title, desc, onConfirm, onCancel, confirmText, cancelText, type='danger' }) => {
+            if (!show) return null;
+            return (
+                <div className="premium-confirm-overlay" onClick={onCancel}>
+                    <div className="premium-confirm-card" onClick={e => e.stopPropagation()}>
+                        <div style={{
+                            width:'64px', height:'64px', background: type==='danger' ? '#FEF2F2' : '#F0FDF4', 
+                            borderRadius:'20px', display:'flex', alignItems:'center', justifyContent:'center', 
+                            fontSize:'32px', margin:'0 auto 20px', border: type==='danger' ? '2.5px solid #FEE2E2' : '2.5px solid #DCFCE7'
+                        }}>
+                            {type === 'danger' ? '⚠️' : '✨'}
+                        </div>
+                        <h3 className="nunito" style={{fontSize:'22px', fontWeight:'900', marginBottom:'12px', color:'#1E293B'}}>{title}</h3>
+                        <p style={{fontSize:'14px', fontWeight:'700', color:'var(--g)', lineHeight:'1.5', marginBottom:'32px'}}>{desc}</p>
+                        <div style={{display:'flex', gap:'12px'}}>
+                            <button className="btn-yellow" style={{flex:1, background:'#F1F5F9', color:'#64748B', border:'none', borderRadius:'16px', padding:'16px', fontWeight:'900', cursor:'pointer'}} onClick={onCancel}>{cancelText || 'Go Back'}</button>
+                            <button className={type==='danger' ? 'btn-red' : 'btn-green'} style={{flex:1.5, padding:'16px'}} onClick={onConfirm}>{confirmText || 'Confirm'}</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const MasterSummary = ({ groups, expenses, getMemberBalance, setSelectedId, setView, setGroups, setExpenses, setShowCurrPickerId, showCurrPickerId, handleRenameGroup, handleDeleteGroup, me, setShowExpModal, setEditingExpense, globalSettleData, setGlobalSettleData, userMetadata, setUserMetadata, BalanceDisplay }) => {
             const [openDropdownId, setOpenDropdownId] = useState(null);
 
             useEffect(() => {
@@ -952,7 +1069,7 @@
 
             const netBalances = {};
             expenses.forEach(e => {
-                const splitters = e.splitters || [];
+                const splitters = (e.splitters && e.splitters.length > 0) ? e.splitters : [e.paid || me];
                 const amount = parseFloat(e.amt) || 0;
                 const payer = e.paid;
                 const curr = e.currency || '₹';
@@ -971,20 +1088,69 @@
 
             return (
                 <div className="content-width-limit">
-                    <div className="card shadow-lg" style={{padding:'24px 32px', background:'linear-gradient(to bottom, #ffffff, #f8fafc)', borderRadius:'28px', border:'2px solid rgba(0,0,0,0.02)', marginBottom:'24px', textAlign:'center'}}>
-                        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'20px'}}>
-                            <div style={{textAlign:'left'}}>
-                                <h1 className="nunito" style={{fontSize:'12px', fontWeight:'900', color:'var(--g)', textTransform:'uppercase', letterSpacing:'1.5px', marginBottom:'4px'}}>Portfolio Balance</h1>
-                                <BalanceDisplay balances={netBalances} showDetailedLabels={true} align="left" style={{fontSize:'24px', fontWeight:'950'}} />
+                    <div className="card shadow-xl" style={{
+                        padding:'40px 32px', 
+                        background:'linear-gradient(135deg, #ffffff 0%, #f8fafc 100%)', 
+                        borderRadius:'32px', 
+                        border:'1.5px solid rgba(0,0,0,0.03)', 
+                        marginBottom:'32px',
+                        position:'relative',
+                        overflow:'hidden'
+                    }}>
+                        {/* Decorative background element */}
+                        <div style={{position:'absolute', top:'-20px', right:'-20px', width:'150px', height:'150px', background:'rgba(59, 130, 246, 0.03)', borderRadius:'50%'}}></div>
+                        
+                        <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'32px', position:'relative'}}>
+                            <div style={{flex:1, minWidth:'280px'}}>
+                                <h1 className="nunito" style={{fontSize:'36px', fontWeight:'950', color:'#0F172A', letterSpacing:'-1px', marginBottom:'24px'}}>Portfolio Balance 💎</h1>
+                                
+                                <div style={{display:'flex', gap:'24px', flexWrap:'wrap'}}>
+                                    {/* Owed Section */}
+                                    {Object.entries(netBalances).filter(([_, v]) => v > 0.01).length > 0 && (
+                                        <div style={{padding:'20px 24px', background:'#ECFDF5', borderRadius:'24px', border:'1px solid #D1FAE5', flex:1, minWidth:'180px'}}>
+                                            <div style={{fontSize:'11px', fontWeight:'900', color:'#059669', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'8px', display:'flex', alignItems:'center', gap:'6px'}}>
+                                                You are Owed <span style={{fontSize:'14px'}}>📈</span>
+                                            </div>
+                                            {Object.entries(netBalances).filter(([_, v]) => v > 0.01).map(([c, v]) => (
+                                                <div key={c} style={{display:'flex', alignItems:'baseline', gap:'6px', color:'#065F46'}}>
+                                                    <span style={{fontSize:'14px', fontWeight:'800', opacity:0.6}}>{c}</span>
+                                                    <span style={{fontSize:'28px', fontWeight:'950'}}>{v.toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:2})}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+
+                                    {/* Owe Section */}
+                                    {Object.entries(netBalances).filter(([_, v]) => v < -0.01).length > 0 && (
+                                        <div style={{padding:'20px 24px', background:'#FFF1F2', borderRadius:'24px', border:'1px solid #FFE4E6', flex:1, minWidth:'180px'}}>
+                                            <div style={{fontSize:'11px', fontWeight:'900', color:'#E11D48', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'8px', display:'flex', alignItems:'center', gap:'6px'}}>
+                                                You Owe <span style={{fontSize:'14px'}}>📉</span>
+                                            </div>
+                                            {Object.entries(netBalances).filter(([_, v]) => v < -0.01).map(([c, v]) => (
+                                                <div key={c} style={{display:'flex', alignItems:'baseline', gap:'6px', color:'#9F1239'}}>
+                                                    <span style={{fontSize:'14px', fontWeight:'800', opacity:0.6}}>{c}</span>
+                                                    <span style={{fontSize:'28px', fontWeight:'950'}}>{Math.abs(v).toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:2})}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+
+                                    {Object.entries(netBalances).length === 0 && (
+                                        <div style={{padding:'32px', background:'#F8FAFC', borderRadius:'24px', textAlign:'center', width:'100%', color:'var(--g)', fontWeight:'800'}}>
+                                            ✨ You're all settled up!
+                                        </div>
+                                    )}
+                                </div>
                             </div>
-                            <div style={{display:'flex', gap:'12px', flexWrap:'wrap', justifyContent:'flex-end'}}>
-                                <button className="btn-green hover-up" style={{padding:'12px 24px', height:'44px', fontSize:'14px'}} onClick={() => { setEditingExpense(null); setShowExpModal(true); }}>
-                                    <span>⚡</span> New Expense
+                            
+                            <div style={{display:'flex', gap:'12px', width:'100%', maxWidth:'400px', flexWrap:'wrap'}}>
+                                <button className="btn-green hover-up" style={{flex:1, minWidth:'120px', padding:'16px', height:'56px', fontSize:'14px', fontWeight:'950', boxShadow:'0 10px 25px -5px rgba(16, 185, 129, 0.3)'}} onClick={() => { setEditingExpense(null); setShowExpModal(true); }}>
+                                    <span>⚡</span> New Split
                                 </button>
-                                <button className="hover-up" style={{padding:'12px 24px', height:'44px', fontSize:'14px', background: 'linear-gradient(135deg, #60A5FA 0%, #3B82F6 100%)', color: 'white', border: 'none', borderRadius: '20px', fontWeight: '900', boxShadow: '0 10px 25px -5px rgba(59, 130, 246, 0.3)', cursor:'pointer', display:'flex', alignItems:'center', gap:'8px'}} onClick={() => setView('friends')}>
+                                <button className="hover-up" style={{flex:1, minWidth:'120px', padding:'16px', height:'56px', fontSize:'14px', background: 'linear-gradient(135deg, #60A5FA 0%, #3B82F6 100%)', color: 'white', border: 'none', borderRadius: '20px', fontWeight: '950', boxShadow: '0 10px 25px -5px rgba(59, 130, 246, 0.3)', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px'}} onClick={() => setView('friends')}>
                                     <span>🤝</span> Settle Up
                                 </button>
-                                <button className="btn-yellow hover-up" style={{padding:'12px 24px', height:'44px', fontSize:'14px'}} onClick={() => { const id = Date.now(); setGroups([...groups, {id, name:'', members:[me], currency: '₹'}]); setSelectedId(id); setView('detail'); }}>
+                                <button className="btn-yellow hover-up" style={{flex:1, minWidth:'120px', padding:'16px', height:'56px', fontSize:'14px', fontWeight:'950'}} onClick={() => { const id = Date.now(); setGroups([...groups, {id, name:'', members:[me], currency: '₹'}]); setSelectedId(id); setView('detail'); }}>
                                     <span>✨</span> New Group
                                 </button>
                             </div>
@@ -999,7 +1165,7 @@
                             expenses.forEach(e => {
                                 const g = groups.find(x => x.id === e.gId);
                                 const isStandalone = e.gId === 'STANDALONE';
-                                const splitters = e.splitters || (isStandalone ? [e.paid] : g?.members) || [];
+                                const splitters = (e.splitters && e.splitters.length > 0) ? e.splitters : (isStandalone ? [e.paid] : (g?.members || [e.paid]));
                                 const amount = parseFloat(e.amt) || 0;
                                 const payer = e.paid;
                                 const curr = e.currency || g?.currency || '₹';
@@ -1029,9 +1195,11 @@
                                             <h4 style={{fontSize:'16px', fontWeight:'900', color:'#065F46', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:'16px', display:'flex', alignItems:'center', gap:'8px'}}>Friends who owe You 💚</h4>
                                             {youAreOwed.map(([name, bals]) => (
                                                 <div key={name} className="hover-up-mini" style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'12px 0', borderBottom:'1px dashed rgba(6, 95, 70, 0.1)'}}>
-                                                    <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
+                                                    <div style={{display:'flex', alignItems:'center', gap:'10px', flexWrap:'wrap'}}>
                                                         <span style={{fontWeight:'900', fontSize:'15px', color:'#065F46'}}>{name}</span>
-                                                        <button onClick={() => setGlobalSettleData({ name, balances: Object.entries(bals).reduce((acc, [c, v]) => { if(v > 0.01) acc[c] = v; return acc; }, {}) })} style={{fontSize:'11px', fontWeight:'900', background:'white', border:'1.5px solid #6EE7B7', padding:'4px 12px', borderRadius:'8px', color:'#065F46', cursor:'pointer', transition:'0.2s all'}}>Clear Dues 💸</button>
+                                                        <div style={{display:'flex', gap:'6px'}}>
+                                                            <button onClick={() => setGlobalSettleData({ name, balances: Object.entries(bals).reduce((acc, [c, v]) => { if(v > 0.01) acc[c] = v; return acc; }, {}) })} style={{fontSize:'10px', fontWeight:'900', background:'white', border:'1.5px solid #6EE7B7', padding:'6px 12px', borderRadius:'10px', color:'#065F46', cursor:'pointer', transition:'0.2s all'}}>Clear Dues 💸</button>
+                                                        </div>
                                                     </div>
                                                     <BalanceDisplay balances={Object.entries(bals).reduce((acc, [c, v]) => { if(v > 0.01) acc[c] = v; return acc; }, {})} align="right" style={{fontWeight:'900', color:'#000000', fontSize:'18px'}} />
                                                 </div>
@@ -1048,15 +1216,21 @@
                                     {youOwe.length > 0 && (
                                         <div className="card" style={{background:'#FFE4E6', border:'1.5px solid #FDA4AF', padding:'20px', borderRadius:'18px'}}>
                                             <h4 style={{fontSize:'16px', fontWeight:'900', color:'#9F1239', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:'16px', display:'flex', alignItems:'center', gap:'8px'}}>People You owe ❤️</h4>
-                                            {youOwe.map(([name, bals]) => (
-                                                <div key={name} className="hover-up-mini" style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'12px 0', borderBottom:'1px dashed rgba(159, 18, 57, 0.1)'}}>
-                                                    <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
-                                                        <span style={{fontWeight:'900', fontSize:'15px', color:'#9F1239'}}>{name}</span>
-                                                        <button onClick={() => setGlobalSettleData({ name, balances: Object.entries(bals).reduce((acc, [c, v]) => { if(v < -0.01) acc[c] = v; return acc; }, {}) })} style={{fontSize:'11px', fontWeight:'900', background:'white', border:'1.5px solid #FDA4AF', padding:'4px 12px', borderRadius:'8px', color:'#9F1239', cursor:'pointer', transition:'0.2s all'}}>Clear Dues 💸</button>
+                                            {youOwe.map(([name, bals]) => {
+                                                const upi = userMetadata[name]?.upiId;
+                                                const totalVal = Object.entries(bals).reduce((acc, [c, v]) => acc + (v < -0.01 ? Math.abs(v) : 0), 0);
+                                                return (
+                                                    <div key={name} className="hover-up-mini" style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'12px 0', borderBottom:'1px dashed rgba(159, 18, 57, 0.1)'}}>
+                                                        <div style={{display:'flex', alignItems:'center', gap:'10px', flexWrap:'wrap'}}>
+                                                            <span style={{fontWeight:'900', fontSize:'15px', color:'#9F1239'}}>{name}</span>
+                                                            <div style={{display:'flex', gap:'6px'}}>
+                                                            <button onClick={() => setGlobalSettleData({ name, balances: Object.entries(bals).reduce((acc, [c, v]) => { if(v < -0.01) acc[c] = v; return acc; }, {}) })} style={{fontSize:'10px', fontWeight:'900', background:'white', border:'1.5px solid #FDA4AF', padding:'6px 12px', borderRadius:'10px', color:'#9F1239', cursor:'pointer', transition:'0.2s all'}}>Clear Dues 💸</button>
+                                                            </div>
+                                                        </div>
+                                                        <BalanceDisplay balances={Object.entries(bals).reduce((acc, [c, v]) => { if(v < -0.01) acc[c] = v; return acc; }, {})} align="right" style={{fontWeight:'900', color:'#000000', fontSize:'18px'}} />
                                                     </div>
-                                                    <BalanceDisplay balances={Object.entries(bals).reduce((acc, [c, v]) => { if(v < -0.01) acc[c] = v; return acc; }, {})} align="right" style={{fontWeight:'900', color:'#000000', fontSize:'18px'}} />
-                                                </div>
-                                            ))}
+                                                );
+                                            })}
                                             <div style={{display:'flex', justifyContent:'space-between', padding:'12px 0 0 0', marginTop:'8px', borderTop:'2px solid rgba(159, 18, 57, 0.2)'}}>
                                                 <span style={{fontWeight:'900', fontSize:'14px', color:'#9F1239', textTransform:'uppercase'}}>Total Payable</span>
                                                 <BalanceDisplay balances={Object.values(masterBal).reduce((acc, bals) => {
@@ -1071,7 +1245,6 @@
                                             <p style={{color:'var(--g)', fontWeight:'700', fontSize:'14px'}}>Everything is clear! 🌈</p>
                                         </div>
                                     )}
-                                    {/* Recent Activity removed from here as per request */}
                                 </div>
                             );
                         })()}
@@ -1094,7 +1267,7 @@
                                             <div style={{display:'flex', alignItems:'center', gap: (g.emoji || getEmoji(g.name)) ? '12px' : '0px'}}>
                                                 {(g.emoji || getEmoji(g.name)) && <div style={{fontSize:'32px'}}>{g.emoji || getEmoji(g.name)}</div>}
                                                 <div>
-                                                    <h3 className="nunito" style={{fontSize:'18px', color: c.text, fontWeight:'900', lineHeight:1, opacity: g.name ? 1 : 0.5}}>{g.name || 'Untitled Space 🏘️'}</h3>
+                                                    <h3 className="nunito" style={{fontSize:'18px', color: c.text, fontWeight:'900', lineHeight:1, opacity: g.name ? 1 : 0.5}}>{g.name || 'Untitled Group 🏘️'}</h3>
                                                     <p style={{fontSize:'10px', fontWeight:'800', color: c.text, opacity:0.5, marginTop:'2px'}}>{g.id === 'STANDALONE' ? 'Personal & One-off' : `${g.members.length} members`}</p>
                                                 </div>
                                             </div>
@@ -1111,7 +1284,7 @@
                                                              groupExps.forEach(e => {
                                                                  const curr = e.currency || g.currency || '₹';
                                                                  if (!rel[curr]) rel[curr] = 0;
-                                                                 const splitters = e.splitters || effectiveMembers || [];
+                                                                 const splitters = (e.splitters && e.splitters.length > 0) ? e.splitters : (effectiveMembers.length > 0 ? effectiveMembers : [e.paid]);
                                                                  const amount = parseFloat(e.amt) || 0;
                                                                  const myShare = (!e.mode || e.mode === 'Equally') ? (amount / splitters.length) : (e.mode === 'Unequally' ? (parseFloat(e.shares?.[me]) || 0) : (amount * (parseFloat(e.shares?.[me]) || 0) / 100));
                                                                  const otherShare = (!e.mode || e.mode === 'Equally') ? (amount / splitters.length) : (e.mode === 'Unequally' ? (parseFloat(e.shares?.[m]) || 0) : (amount * (parseFloat(e.shares?.[m]) || 0) / 100));
@@ -1142,15 +1315,7 @@
                                                  </div>
                                              </div>
 
-                                             <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:'4px'}}>
-                                                 <div style={{display:'flex', alignItems:'center', gap:'12px'}}>
-                                                     <div onClick={(e) => { e.stopPropagation(); setShowCurrPickerId(g.id); }} style={{width:'32px', height:'32px', background:'white', border:`1.5px solid ${c.border}`, borderRadius:'10px', fontSize:'14px', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', fontWeight:'900', color:c.text, boxShadow:'0 2px 5px rgba(0,0,0,0.05)'}}>
-                                                         {g.currency || '₹'}
-                                                     </div>
-                                                     <div style={{fontSize:'13px', fontWeight:'900', padding:'8px 18px', background:'white', color: '#1E293B', borderRadius:'14px', border: `1.5px solid ${c.border}`, boxShadow:'0 2px 5px rgba(0,0,0,0.05)'}}>
-                                                         <BalanceDisplay balances={bal} highlightZero={true} align="left" />
-                                                     </div>
-                                                 </div>
+                                             <div style={{display:'flex', justifyContent:'flex-end', alignItems:'center', marginTop:'8px', paddingTop:'10px', borderTop:'1.5px solid rgba(0,0,0,0.03)'}}>
                                                  
                                                  {(() => {
                                                      const groupExps = expenses.filter(e => e.gId === g.id);
@@ -1180,15 +1345,23 @@
                                                          return `${names[0]} & ${names.length - 1} others`;
                                                      };
 
-                                                     const primaryBal = Object.entries(bal).find(([_, v]) => Math.abs(v) > 0.01) || [g.currency || '₹', 0];
-                                                     const amtStr = `${primaryBal[0]}${Math.abs(primaryBal[1]).toLocaleString()}`;
+                                                     // 🛡️ Multi-Currency Summary Fix: List ALL non-zero balances
+                                                     const activeBals = Object.entries(bal)
+                                                         .filter(([_, v]) => Math.abs(v) > 0.01)
+                                                         .map(([curr, val]) => `${curr}${Math.abs(val).toLocaleString()}`);
+                                                     
+                                                     const amtStr = activeBals.join(' & ');
+                                                     const totalNet = Object.values(bal).reduce((a, b) => a + b, 0);
 
                                                      let status = 'Settled Up! 🕊️';
-                                                     if (primaryBal[1] > 0.01 && directOwed.length > 0) status = `Owed ${amtStr} by ${formatNames(directOwed)} 📈`;
-                                                     else if (primaryBal[1] < -0.01 && directOwes.length > 0) status = `You owe ${amtStr} to ${formatNames(directOwes)} 📉`;
+                                                     if (activeBals.length > 0) {
+                                                         if (totalNet > 0.01) status = `Owed ${amtStr} by ${formatNames(directOwed)} 📈`;
+                                                         else if (totalNet < -0.01) status = `You owe ${amtStr} to ${formatNames(directOwes)} 📉`;
+                                                         else status = `Multiple Currencies (Mixed) 💱`;
+                                                     }
 
                                                      return (
-                                                         <p style={{fontSize:'10px', fontWeight:'900', color: c.text, opacity:0.8, textTransform:'uppercase', letterSpacing:'0.5px', textAlign:'right', maxWidth:'180px'}}>
+                                                         <p style={{fontSize:'10px', fontWeight:'950', color: c.text, opacity:0.8, textTransform:'uppercase', letterSpacing:'0.5px', textAlign:'right', maxWidth:'220px', lineHeight:'1.2'}}>
                                                              {status}
                                                          </p>
                                                      );
@@ -1207,8 +1380,8 @@
                                                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                                                 >⋮</div>
                                                 <div className="dropdown-content" style={{display: openDropdownId === g.id ? 'block' : 'none', right:0, top:'100%', textAlign:'left'}}>
-                                                    <div onClick={() => { setOpenDropdownId(null); handleRenameGroup(g.id); }} style={{fontWeight:'800'}}>✏️ Rename Space</div>
-                                                    <div style={{color:'#DB2777', fontWeight:'800'}} onClick={() => { setOpenDropdownId(null); handleDeleteGroup(g.id); }}>🗑️ Delete Space</div>
+                                                    <div onClick={() => { setOpenDropdownId(null); handleRenameGroup(g.id); }} style={{fontWeight:'800'}}>✏️ Rename Group</div>
+                                                    <div style={{color:'#DB2777', fontWeight:'800'}} onClick={() => { setOpenDropdownId(null); handleDeleteGroup(g.id); }}>🗑️ Delete Group</div>
                                                 </div>
                                             </div>
                                         </div>
@@ -1226,7 +1399,7 @@
                             }}>
                                 <div style={{display:'flex', alignItems:'center', gap:'16px'}}>
                                     <div style={{fontSize:'32px', color:'#92400E', opacity:0.3}}>➕</div>
-                                    <h3 className="nunito" style={{fontSize:'18px', color:'#92400E', opacity:0.5}}>Create a New Space</h3>
+                                    <h3 className="nunito" style={{fontSize:'18px', color:'#92400E', opacity:0.5}}>Create a New Group</h3>
                                 </div>
                             </div>
                         </div>
@@ -1236,7 +1409,7 @@
         );
     };
 
-        const GroupDetail = ({ selectedId, groups, expenses, getMemberBalance, setView, setGroups, setShowExpModal, setEditingExpense, setExpenses, setShowAddFriendModal, setShowMembersHealth, setShowCurrPickerId, showCurrPickerId, me, setShowConvertModalId, userMetadata }) => {
+        const GroupDetail = ({ selectedId, groups, expenses, getMemberBalance, setView, setGroups, setShowExpModal, setEditingExpense, setExpenses, setShowAddFriendModal, setShowMembersHealth, setShowCurrPickerId, showCurrPickerId, me, setShowConvertModalId, userMetadata, setConfirmState, deleteExpense }) => {
             const currentId = selectedId === 'STANDALONE' ? 'STANDALONE' : Number(selectedId);
             const selectedGroup = selectedId === 'STANDALONE' ? { id: 'STANDALONE', name: 'Standalone Splits ⚡', emoji: '👤', members: Array.from(new Set(expenses.filter(e => String(e.gId) === 'STANDALONE').flatMap(e => e.splitters || []))), currency: '₹' } : (groups.find(g => (String(g.id) === String(selectedId))) || groups[0]);
             const [isRenaming, setIsRenaming] = useState(false);
@@ -1361,23 +1534,23 @@
                 if (trimmed) {
                     const isDuplicate = groups.some(g => g.id !== selectedId && g.name.toLowerCase() === trimmed.toLowerCase());
                     if (isDuplicate) {
-                        setNameError("This Space name already exists! 🏘️");
+                        setNameError("This Group name already exists! 🏘️");
                         return;
                     }
                     setGroups(groups.map(g => (g.id === currentId || g.id === selectedId) ? {...g, name: trimmed} : g));
                     setIsRenaming(false);
                 } else {
                     // Default fallback if empty
-                    const defaultName = "New Space 🏘️";
+                    const defaultName = "New Group 🏘️";
                     const isDuplicate = groups.some(g => g.id !== selectedId && g.name.toLowerCase() === defaultName.toLowerCase());
-                    const finalName = isDuplicate ? `New Space ${Date.now().toString().slice(-3)}` : defaultName;
+                    const finalName = isDuplicate ? `New Group ${Date.now().toString().slice(-3)}` : defaultName;
                     setGroups(groups.map(g => (g.id === currentId || g.id === selectedId) ? {...g, name: finalName} : g));
                     setIsRenaming(false);
                 }
             };
 
             const handleClearAll = () => {
-                if (confirm("Are you sure you want to clear all activity in this space? 🧹\n\nThis will permanently delete all expenses and settlements in this space.")) {
+                if (confirm("Are you sure you want to clear all activity in this group? 🧹\n\nThis will permanently delete all expenses and settlements in this group.")) {
                     setExpenses(expenses.filter(e => String(e.gId) !== String(selectedId)));
                 }
             };
@@ -1403,7 +1576,7 @@
                         <div className="card hover-up" style={{padding:'32px', background:'white', borderRadius:'28px', border:'2px solid var(--b)', marginBottom:'24px', boxShadow:'0 20px 40px rgba(0,0,0,0.05)', display:'flex', flexDirection:'column', gap:'16px'}}>
                             <div style={{display:'flex', alignItems:'center', gap:'12px'}}>
                                 <div style={{fontSize:'32px'}}>{selectedGroup?.emoji || getEmoji(newName) || '🏘️'}</div>
-                                <h1 className="nunito" style={{fontSize:'24px', fontWeight:'950', color:'var(--t)'}}>Welcome to your new Space</h1>
+                                <h1 className="nunito" style={{fontSize:'24px', fontWeight:'950', color:'var(--t)'}}>Welcome to your new Group</h1>
                             </div>
                             <div style={{display:'flex', flexDirection:'column', gap:'8px'}}>
                                 <label style={{fontSize:'11px', fontWeight:'900', color:'var(--g)', textTransform:'uppercase', letterSpacing:'1.5px'}}>Give it a name</label>
@@ -1428,7 +1601,7 @@
                                 </div>
                                 ) : (
                                     <h1 className="nunito group-header-h1" style={{fontSize:'32px', fontWeight:'900', cursor: selectedId === 'STANDALONE' ? 'default' : 'pointer', display:'flex', alignItems:'center', gap:'12px'}} onClick={() => { if(selectedId === 'STANDALONE') return; setNewName(selectedGroup?.name || ''); setIsRenaming(true); }}>
-                                        {selectedGroup?.name || 'Untitled Space 🏘️'} {selectedId !== 'STANDALONE' && <span className="edit-pencil" style={{fontSize:'22px', opacity:0.5, marginLeft:'8px'}}>✏️</span>}
+                                        {selectedGroup?.name || 'Untitled Group 🏘️'} {selectedId !== 'STANDALONE' && <span className="edit-pencil" style={{fontSize:'22px', opacity:0.5, marginLeft:'8px'}}>✏️</span>}
                                     </h1>
                                 )}
                             </div>
@@ -1521,47 +1694,68 @@
                                                 const isConversion = e.isConversion;
 
                                                 if (isConversion) {
+                                                    const rateMap = e.ratesUsed ? JSON.parse(e.ratesUsed) : { [e.fromCurr]: e.rate };
+                                                    const rateStrings = Object.entries(rateMap)
+                                                        .filter(([src, r]) => src !== e.toCurr)
+                                                        .map(([src, r]) => `${src}➔${e.toCurr} @ ${r}`);
+
                                                     return (
-                                                        <div key={e.id} className="card hover-up-mini" style={{position:'relative', padding:'16px', background:'linear-gradient(135deg, #F5F3FF 0%, #EDE9FE 100%)', border:'1.5px solid #DDD6FE', display:'flex', justifyContent:'space-between', alignItems:'center', cursor:'default', transition:'0.3s all', marginBottom:'10px', boxShadow:'0 4px 12px rgba(109, 40, 217, 0.05)'}}>
-                                                            <div style={{display:'flex', alignItems:'center', gap:'12px'}}>
-                                                                 <div style={{width:'44px', height:'44px', background:'white', borderRadius:'14px', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'24px', border:'1.5px solid #DDD6FE', boxShadow:'0 2px 4px rgba(0,0,0,0.05)'}}>💱</div>
-                                                                 <div>
-                                                                     <div style={{display:'flex', alignItems:'center', gap:'8px'}}>
-                                                                         <h3 className="nunito" style={{fontSize:'16px', color:'#5B21B6', fontWeight:'900'}}>Currency Switched</h3>
-                                                                         <span style={{fontSize:'9px', fontWeight:'900', color:'#6D28D9', opacity:0.6, background:'white', padding:'3px 8px', borderRadius:'6px', border:'1px solid #DDD6FE'}}>{formatDate(e.date)}</span>
-                                                                     </div>
-                                                                     <p style={{fontSize:'12px', fontWeight:'800', color:'#6D28D9', opacity:0.9}}>Shifted from <b style={{color:'#4338CA'}}>{e.fromCurr}</b> to <b style={{color:'#4338CA'}}>{e.toCurr}</b></p>
-                                                                     <p style={{fontSize:'10px', fontWeight:'800', color:'#7C3AED', opacity:0.7, marginTop:'2px', display:'flex', alignItems:'center', gap:'4px'}}>
-                                                                         <span style={{opacity:0.5}}>Rate:</span> 1 {e.fromCurr} = {e.rate} {e.toCurr}
-                                                                     </p>
-                                                                 </div>
-                                                            </div>
-                                                            <div style={{display:'flex', alignItems:'center', gap:'16px'}}>
-                                                                <div style={{textAlign:'right'}}>
-                                                                    <div onClick={() => setShowConvertModalId(selectedId)} style={{padding:'8px 14px', background:'white', borderRadius:'12px', fontSize:'11px', fontWeight:'900', color:'#6D28D9', border:'1.5px solid #DDD6FE', boxShadow:'0 2px 4px rgba(0,0,0,0.02)', cursor:'pointer'}} className="hover-up-mini">Update Rate</div>
+                                                        <div key={e.id} className="card" 
+                                                            style={{
+                                                                position:'relative', padding:'16px 20px', 
+                                                                background:'linear-gradient(90deg, #FDFCFE 0%, #F5F3FF 100%)', 
+                                                                border:'1.5px solid #DDD6FE', display:'flex', 
+                                                                justifyContent:'space-between', alignItems:'center', 
+                                                                transition:'0.2s all', marginBottom:'10px'
+                                                            }}
+                                                            className="hover-bright"
+                                                        >
+                                                            <div 
+                                                                onClick={() => setShowConvertModalId(selectedId)}
+                                                                style={{display:'flex', alignItems:'center', gap:'12px', cursor:'pointer', flex:1}}
+                                                            >
+                                                                <div style={{width:'44px', height:'44px', background:'white', borderRadius:'14px', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'24px', border:'1.5px solid #DDD6FE', boxShadow:'0 2px 4px rgba(0,0,0,0.05)'}}>💱</div>
+                                                                <div>
+                                                                    <div style={{display:'flex', alignItems:'center', gap:'8px'}}>
+                                                                        <h3 className="nunito" style={{fontSize:'16px', fontWeight:'900', color:'#5B21B6'}}>Currency Conversion <span style={{fontSize:'11px', opacity:0.3}}>✏️</span></h3>
+                                                                        <span style={{fontSize:'9px', fontWeight:'800', color:'#5B21B6', opacity:0.5, background:'rgba(255,255,255,0.4)', padding:'2px 6px', borderRadius:'4px'}}>{formatDate(e.date)}</span>
+                                                                    </div>
+                                                                    <div style={{display:'flex', flexWrap:'wrap', gap:'4px', marginTop:'4px'}}>
+                                                                        {rateStrings.map(rs => (
+                                                                            <span key={rs} style={{fontSize:'9px', fontWeight:'900', background:'#EDE9FE', color:'#7C3AED', padding:'1px 6px', borderRadius:'4px', border:'1px solid #DDD6FE'}}>
+                                                                                {rs}
+                                                                            </span>
+                                                                        ))}
+                                                                    </div>
                                                                 </div>
-                                                                <div className="dropdown" style={{position:'relative', cursor:'pointer', fontSize:'18px', padding:'2px', color:'#6D28D9'}} onClick={(ev) => { ev.stopPropagation(); setOpenExpId(openExpId === e.id ? null : e.id); }}>
+                                                            </div>
+                                                            <div style={{display:'flex', alignItems:'center', gap:'16px', position:'relative', zIndex:10}} onClick={ev => ev.stopPropagation()}>
+                                                                <div className="dropdown" style={{position:'relative', cursor:'pointer', fontSize:'18px', padding:'10px', color:'var(--g)'}} onClick={(ev) => { ev.stopPropagation(); setOpenExpId(openExpId === e.id ? null : e.id); }}>
                                                                     ⋮
-                                                                    <div className="dropdown-content" style={{display: openExpId === e.id ? 'block' : 'none', right:0, top:'100%', minWidth:'100px'}}>
-                                                                        <div onClick={() => setShowConvertModalId(selectedId)}>✏️ Edit Rate</div>
-                                                                        <div onClick={() => { 
-                                                                            if(confirm(`Revert balances back to ${e.fromCurr} as well? 🔄\n\nThis will undo the math for all expenses in this group.`)) {
-                                                                                const r = 1 / (e.rate || 1);
-                                                                                setGroups(groups.map(g => String(g.id) === String(e.gId) ? {...g, currency: e.fromCurr} : g));
+                                                                    <div className="dropdown-content" style={{display: openExpId === e.id ? 'block' : 'none', right:0, top:'100%', minWidth:'180px', zIndex:100}}>
+                                                                        <div onClick={(ev) => { ev.stopPropagation(); setShowConvertModalId(selectedId); setOpenExpId(null); }}>⚙️ Adjust Conversion</div>
+                                                                        <div style={{color:'#DB2777'}} onClick={(ev) => { 
+                                                                            ev.stopPropagation();
+                                                                            if(confirm(`Undo this conversion? 🔄\n\nThis will restore the exact state before this conversion.`)) {
+                                                                                const snapshotArr = e.snapshot ? JSON.parse(e.snapshot) : [];
+                                                                                const snapMap = {};
+                                                                                snapshotArr.forEach(s => { snapMap[s.id] = s; });
+
                                                                                 setExpenses(prev => prev.map(x => {
-                                                                                    if (String(x.gId) === String(e.gId) && !x.isConversion) {
-                                                                                        const newShares = {};
-                                                                                        if (x.mode === 'Unequally' && x.shares) {
-                                                                                            Object.entries(x.shares).forEach(([m, val]) => { newShares[m] = val * r; });
-                                                                                        }
-                                                                                        return { ...x, amt: x.amt * r, currency: e.fromCurr, shares: Object.keys(newShares).length > 0 ? newShares : x.shares };
+                                                                                    if (snapMap[x.id]) {
+                                                                                        const s = snapMap[x.id];
+                                                                                        return { ...x, amt: s.amt, currency: s.currency, shares: s.shares };
                                                                                     }
                                                                                     return x;
                                                                                 }).filter(x => x.id !== e.id));
-                                                                            } else if(confirm('Just delete the log entry?')) {
+
+                                                                                const restoredCurr = e.fromCurr || (snapshotArr[0]?.currency) || '₹';
+                                                                                setGroups(groups.map(g => String(g.id) === String(selectedId) ? {...g, currency: restoredCurr} : g));
+                                                                            } else if(confirm('Just delete the log entry without undoing?')) {
                                                                                 setExpenses(expenses.filter(x => x.id !== e.id));
                                                                             }
-                                                                        }}>🗑️ Delete</div>
+                                                                            setOpenExpId(null);
+                                                                        }}>🗑️ Delete Activity</div>
                                                                     </div>
                                                                 </div>
                                                             </div>
@@ -1585,14 +1779,14 @@
                                                             </div>
                                                             <div style={{display:'flex', alignItems:'center', gap:'16px'}}>
                                                                 <div style={{textAlign:'right'}}>
-                                                                    <p style={{fontSize:'20px', fontWeight:'900', color:'#000000'}}>{e.currency || selectedGroup.currency || '₹'}{e.amt.toLocaleString()}</p>
+                                                                    <p style={{fontSize:'20px', fontWeight:'900', color:'#000000'}}>{e.currency || selectedGroup.currency || '₹'}{(parseFloat(e.amt) || 0).toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 2})}</p>
                                                                     <p style={{fontSize:'8px', fontWeight:'900', color:'#065F46', textTransform:'uppercase', opacity:0.6}}>Cleared ✅</p>
                                                                 </div>
                                                                 <div className="dropdown" style={{position:'relative', cursor:'pointer', fontSize:'18px', padding:'2px', color:'var(--g)'}} onClick={(ev) => { ev.stopPropagation(); setOpenExpId(openExpId === e.id ? null : e.id); }}>
                                                                     ⋮
                                                                     <div className="dropdown-content" style={{display: openExpId === e.id ? 'block' : 'none', right:0, top:'100%', minWidth:'100px'}}>
                                                                         <div onClick={() => setEditingSettle(e)}>✏️ Edit</div>
-                                                                        <div style={{color:'#DB2777'}} onClick={() => { if(confirm('Delete settlement?')) setExpenses(expenses.filter(x => x.id !== e.id)); }}>🗑️ Delete</div>
+                                                                        <div style={{color:'#DB2777'}} onClick={() => deleteExpense(e.id)}>🗑️ Delete</div>
                                                                     </div>
                                                                 </div>
                                                             </div>
@@ -1614,7 +1808,7 @@
                                                                     <div style={{display:'flex', gap:'8px', flexWrap:'wrap', marginTop:'4px'}}>
                                                                         {splitters.filter(m => m !== me).map(m => (
                                                                             <span key={m} style={{color:'#2D6A4F', fontWeight:'900', fontSize:'10px', display:'flex', alignItems:'baseline', gap:'1px'}}>
-                                                                                • {m} owes <span style={{fontSize:'0.85em', fontWeight:'400', opacity:0.7}}>{e.currency || selectedGroup.currency || '₹'}</span>{getLocalShare(m).toFixed(0)}
+                                                                                • {m} owes <span style={{fontSize:'0.85em', fontWeight:'400', opacity:0.7}}>{e.currency || selectedGroup.currency || '₹'}</span>{getLocalShare(m).toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 2})}
                                                                             </span>
                                                                         ))}
                                                                     </div>
@@ -1637,7 +1831,7 @@
                                                                 ⋮
                                                                 <div className="dropdown-content" style={{display: openExpId === e.id ? 'block' : 'none', right:0, top:'100%', minWidth:'100px'}}>
                                                                     <div onClick={() => { setEditingExpense(e); setShowExpModal(true); }}>✏️ Edit</div>
-                                                                    <div style={{color:'#DB2777'}} onClick={() => { if(confirm('Delete expense?')) setExpenses(expenses.filter(x => x.id !== e.id)); }}>🗑️ Delete</div>
+                                                                    <div style={{color:'#DB2777'}} onClick={() => deleteExpense(e.id)}>🗑️ Delete</div>
                                                                 </div>
                                                             </div>
                                                         </div>
@@ -1746,45 +1940,95 @@
                             </div>
                             <div style={{display:'flex', flexDirection:'column', gap:'12px'}}>
                                 <button className="hover-up" style={{width:'100%', padding:'16px', fontSize:'14px', borderRadius:'18px', border:'1.5px solid #CFFAFE', background:'#ECFEFF', color:'#0891B2', fontWeight:'900', cursor:'pointer'}} onClick={() => { if(confirm('Settle all dues in this group? This will remove all existing bills.')) setExpenses(expenses.filter(e => e.gId !== selectedId)); }}>Settle All Dues ✅</button>
-                                <button className="hover-up" style={{width:'100%', padding:'14px', fontSize:'13px', borderRadius:'18px', border:'1.5px solid #FCE7F3', background:'#FDF2F8', color:'#BE185D', fontWeight:'800', cursor:'pointer'}} onClick={() => alert('WhatsApp Reminder Sent! 📱')}>Send Reminders 📱</button>
+                                
                                 <button className="btn-green" style={{width:'100%', padding:'12px', fontSize:'12px', opacity:0.6, marginTop:'4px'}} onClick={() => setShowMembersHealth(true)}>View Members Health 👥</button>
                             </div>
                         </div>
                     </div>
                     {showSettleModal && (
                         <div className="modal-overlay" onClick={() => { setShowSettleModal(false); setEditingSettle(null); }} style={{zIndex: 2000}}>
-                            <div className="card modal-content" onClick={e => e.stopPropagation()} style={{maxWidth:'400px', padding:'24px', borderRadius:'24px', position:'relative'}}>
-                                <div style={{display:'flex', justifyContent:'space-between', marginBottom:'24px', alignItems:'center'}}>
-                                    <h2 className="nunito" style={{fontSize:'22px', fontWeight:'900'}}>{editingSettle ? 'Edit Settlement' : 'Clear Dues'}</h2>
-                                    <div style={{display:'flex', gap:'10px', alignItems:'center'}}>
-                                        {/* Calendar Square */}
-                                        <div onClick={() => settleDateRef.current && settleDateRef.current.showPicker()} style={{position:'relative', width:'32px', height:'32px', background:'#F1F5F9', borderRadius:'8px', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'14px', cursor:'pointer'}}>
-                                            <input ref={settleDateRef} type="date" value={settleDate} onChange={e => setSettleDate(e.target.value)} style={{position:'absolute', opacity:0, width:0, height:0}} />
-                                            🗓️
-                                            {settleDate !== new Date().toISOString().split('T')[0] && <div style={{position:'absolute', top:'-2px', right:'-2px', width:'8px', height:'8px', background:'#3B82F6', borderRadius:'50%', border:'2px solid white'}}></div>}
-                                        </div>
-                                        <div onClick={() => setShowSettleNotes(!showSettleNotes)} style={{width:'32px', height:'32px', background: '#F1F5F9', borderRadius:'8px', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'14px', cursor:'pointer', position:'relative'}}>
-                                            📝
-                                            {settleNotes && <div style={{position:'absolute', top:'-2px', right:'-2px', width:'8px', height:'8px', background:'#10B981', borderRadius:'50%', border:'2px solid white'}}></div>}
-                                        </div>
-                                        <div onClick={() => alert('Camera Feature coming soon! 📸')} style={{width:'32px', height:'32px', background:'#F1F5F9', borderRadius:'8px', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'14px', cursor:'pointer'}}>
-                                            📸
-                                        </div>
-                                        <div style={{width:'1px', height:'20px', background:'#E2E8F0', margin:'0 4px'}}></div>
-                                        <button style={{background:'none', border:'none', fontSize:'22px', cursor:'pointer', color:'var(--g)', opacity:0.5, padding:0, display:'flex', alignItems:'center'}} onClick={() => { setShowSettleModal(false); setEditingSettle(null); }}>✕</button>
+                            <div className="card modal-content" onClick={e => e.stopPropagation()} style={{maxWidth:'440px', padding:'24px', borderRadius:'28px', position:'relative', background:'white'}}>
+                                <div style={{display:'flex', justifyContent:'space-between', marginBottom:'20px', alignItems:'center'}}>
+                                    <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
+                                        <div style={{width:'44px', height:'44px', background:'#F0FDF4', borderRadius:'14px', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'24px', color:'#16A34A'}}>🤝</div>
+                                        <h2 className="nunito" style={{fontSize:'22px', fontWeight:'900'}}>{editingSettle ? 'Edit Settlement' : 'Clear Dues'}</h2>
                                     </div>
+                                    <button style={{background:'none', border:'none', fontSize:'22px', cursor:'pointer', color:'var(--g)', opacity:0.3}} onClick={() => { setShowSettleModal(false); setEditingSettle(null); }}>✕</button>
                                 </div>
+
+                                {/* 🚀 Integrated Suggested Settlements (Robust Scanner) */}
+                                {!editingSettle && (
+                                    <div style={{marginBottom:'24px'}}>
+                                        <h4 style={{fontSize:'10px', fontWeight:'900', color:'var(--g)', textTransform:'uppercase', letterSpacing:'1.5px', marginBottom:'10px'}}>Suggested Settlements</h4>
+                                        <div style={{display:'flex', flexDirection:'column', gap:'8px', maxHeight:'220px', overflowY:'auto', paddingRight:'4px'}}>
+                                            {(() => {
+                                                const pairDebts = {};
+                                                const currentGId = String(selectedId);
+                                                expenses.filter(e => String(e.gId) === currentGId).forEach(e => {
+                                                    const splitters = e.splitters || (selectedId === 'STANDALONE' ? [] : selectedGroup.members);
+                                                    const c = e.currency || selectedGroup.currency || '₹';
+                                                    splitters.forEach(s => {
+                                                        if (s !== e.paid) {
+                                                            const amt = (!e.mode || e.mode === 'Equally') ? (e.amt / (splitters.length || 1)) : (e.mode === 'Unequally' ? (e.shares?.[s] || 0) : (e.amt * (e.shares?.[s] || 0) / 100));
+                                                            if (amt > 0.01) {
+                                                                const key = `${s}-${e.paid}`;
+                                                                if (!pairDebts[key]) pairDebts[key] = {};
+                                                                pairDebts[key][c] = (pairDebts[key][c] || 0) + amt;
+                                                            }
+                                                        }
+                                                    });
+                                                });
+                                                const finalTransactions = [];
+                                                const processedPairs = new Set();
+                                                Object.keys(pairDebts).forEach(key => {
+                                                    const [from, to] = key.split('-');
+                                                    const reverseKey = `${to}-${from}`;
+                                                    if (processedPairs.has(key)) return;
+                                                    const currencies = new Set([...Object.keys(pairDebts[key] || {}), ...Object.keys(pairDebts[reverseKey] || {})]);
+                                                    currencies.forEach(c => {
+                                                        const debt = pairDebts[key]?.[c] || 0;
+                                                        const credit = pairDebts[reverseKey]?.[c] || 0;
+                                                        if (debt - credit > 0.01) finalTransactions.push({ from, to, currency: c, amount: debt - credit });
+                                                        else if (credit - debt > 0.01) finalTransactions.push({ from: to, to: from, currency: c, amount: credit - debt });
+                                                    });
+                                                    processedPairs.add(key); processedPairs.add(reverseKey);
+                                                });
+
+                                                if (finalTransactions.length === 0) return <p style={{fontSize:'12px', fontWeight:'700', color:'var(--g)', textAlign:'center', padding:'20px', background:'#F8FAFC', borderRadius:'16px'}}>All clear! 🌈 No pending dues found.</p>;
+
+                                                return finalTransactions.map((t, i) => {
+                                                    const upi = userMetadata[t.to]?.upiId;
+                                                    return (
+                                                        <div key={i} className="hover-bright" style={{display:'flex', justifyContent:'space-between', alignItems:'center', padding:'12px', background:'white', borderRadius:'16px', border:'1.5px solid #F1F5F9', boxShadow:'0 2px 4px rgba(0,0,0,0.02)'}}>
+                                                            <div>
+                                                                <p style={{fontSize:'11px', fontWeight:'900', color:'var(--g)'}}>{t.from === me ? '🌸 You' : t.from} owe {t.to === me ? 'You' : t.to}</p>
+                                                                <p style={{fontSize:'18px', fontWeight:'950', color:'#0F172A'}}>{t.currency}{t.amount.toLocaleString()}</p>
+                                                            </div>
+                                                            <div style={{display:'flex', gap:'8px'}}>
+                                                                {t.from === me && upi && (
+                                                                    <a href={`upi://pay?pa=${upi}&pn=${t.to}&am=${t.amount}&cu=${t.currency === '₹' ? 'INR' : 'USD'}`} style={{padding:'10px 14px', background:'#F0F9FF', color:'#0284C7', borderRadius:'12px', fontSize:'11px', fontWeight:'900', textDecoration:'none', border:'1.5px solid #B0E5FC'}}>⚡ Pay</a>
+                                                                )}
+                                                                <button onClick={() => { setSettleFrom(t.from); setSettleTo(t.to); setSettleAmt(t.amount.toFixed(2)); setSettleCurr(t.currency); }} style={{padding:'10px 14px', background:'white', color:'#16A34A', borderRadius:'12px', fontSize:'11px', fontWeight:'900', border:'1.5px solid #DCFCE7', cursor:'pointer'}}>Settle</button>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                });
+                                            })()}
+                                        </div>
+                                    </div>
+                                )}
+
                                 <div style={{display:'flex', flexDirection:'column', gap:'12px'}}>
                                     <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:'12px'}}>
                                         <div>
-                                            <label style={{fontSize:'10px', fontWeight:'900', color:'var(--g)', textTransform:'uppercase'}}>Who Paid?</label>
-                                            <select value={settleFrom} onChange={e => setSettleFrom(e.target.value)} style={{width:'100%', padding:'10px', borderRadius:'12px', border:'2px solid #F1F1F1', fontSize:'14px', fontWeight:'700', background:'white', marginTop:'4px'}}>
+                                            <label style={{fontSize:'10px', fontWeight:'900', color:'var(--g)', textTransform:'uppercase'}}>From</label>
+                                            <select value={settleFrom} onChange={e => setSettleFrom(e.target.value)} style={{width:'100%', padding:'12px', borderRadius:'14px', border:'2px solid #F1F1F1', fontSize:'14px', fontWeight:'700', background:'white', marginTop:'4px'}}>
                                                 {selectedGroup.members.map(m => <option key={m} value={m}>{m === me ? '🌸 You' : m}</option>)}
                                             </select>
                                         </div>
                                         <div>
-                                            <label style={{fontSize:'10px', fontWeight:'900', color:'var(--g)', textTransform:'uppercase'}}>Who Received?</label>
-                                            <select value={settleTo} onChange={e => setSettleTo(e.target.value)} style={{width:'100%', padding:'10px', borderRadius:'12px', border:'2px solid #F1F1F1', fontSize:'14px', fontWeight:'700', background:'white', marginTop:'4px'}}>
+                                            <label style={{fontSize:'10px', fontWeight:'900', color:'var(--g)', textTransform:'uppercase'}}>To</label>
+                                            <select value={settleTo} onChange={e => setSettleTo(e.target.value)} style={{width:'100%', padding:'12px', borderRadius:'14px', border:'2px solid #F1F1F1', fontSize:'14px', fontWeight:'700', background:'white', marginTop:'4px'}}>
                                                 <option value="">Select receiver...</option>
                                                 {selectedGroup.members.filter(m => m !== settleFrom).map(m => <option key={m} value={m}>{m === me ? '🌸 You' : m}</option>)}
                                             </select>
@@ -1792,9 +2036,9 @@
                                     </div>
                                     
                                     <div style={{display:'flex', flexDirection:'column', gap:'8px'}}>
-                                        <label style={{fontSize:'10px', fontWeight:'900', color:'var(--g)', textTransform:'uppercase', letterSpacing:'1px'}}>Amount ({settleCurr})</label>
-                                        <div style={{display:'flex', alignItems:'center', background:'#F8FAFC', borderRadius:'16px', border:'1.5px solid #F1F1F1', height:'52px', padding:'0 10px', boxSizing:'border-box'}}>
-                                            <div onClick={(e) => { e.stopPropagation(); setShowCurrPickerId('settle'); }} style={{width:'48px', background:'#10B981', color:'white', borderRadius:'10px', fontSize:'11px', fontWeight:'900', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:'4px', height:'30px', flexShrink:0}}>
+                                        <label style={{fontSize:'10px', fontWeight:'900', color:'var(--g)', textTransform:'uppercase', letterSpacing:'1px'}}>Amount to Clear</label>
+                                        <div style={{display:'flex', alignItems:'center', background:'#F8FAFC', borderRadius:'16px', border:'1.5px solid #F1F1F1', height:'56px', padding:'0 14px'}}>
+                                            <div onClick={(e) => { e.stopPropagation(); setShowCurrPickerId('settle'); }} style={{width:'48px', background:'#16A34A', color:'white', borderRadius:'10px', fontSize:'12px', fontWeight:'900', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:'4px', height:'32px'}}>
                                                 {settleCurr} <span style={{fontSize:'8px'}}>▼</span>
                                             </div>
                                             <input 
@@ -1802,20 +2046,19 @@
                                                 value={settleAmt} 
                                                 onChange={e => setSettleAmt(e.target.value)} 
                                                 placeholder="0.00" 
-                                                style={{flex:1, background:'transparent', border:'none', fontSize:'22px', fontWeight:'900', color:'#0F172A', textAlign:'center', outline:'none', minWidth:0, height:'100%'}} 
+                                                style={{flex:1, background:'transparent', border:'none', fontSize:'24px', fontWeight:'900', color:'#0F172A', textAlign:'center', outline:'none'}} 
                                             />
-                                            <div style={{width:'48px', flexShrink:0}}></div>
                                         </div>
                                     </div>
 
                                     {(showSettleNotes || settleNotes) && (
                                         <div>
-                                            <label style={{fontSize:'10px', fontWeight:'900', color:'var(--g)', textTransform:'uppercase'}}>Notes 📝</label>
-                                            <input ref={settleNotesRef} type="text" value={settleNotes} onChange={e => setSettleNotes(e.target.value)} placeholder="What's this for?" style={{width:'100%', padding:'10px', borderRadius:'12px', border:'2px solid #F1F1F1', fontSize:'13px', fontWeight:'600', marginTop:'4px', outline:'none'}} />
+                                            <label style={{fontSize:'10px', fontWeight:'900', color:'var(--g)', textTransform:'uppercase'}}>Notes</label>
+                                            <input ref={settleNotesRef} type="text" value={settleNotes} onChange={e => setSettleNotes(e.target.value)} placeholder="What's this for?" style={{width:'100%', padding:'12px', borderRadius:'14px', border:'2px solid #F1F1F1', fontSize:'13px', fontWeight:'600', marginTop:'4px', outline:'none'}} />
                                         </div>
                                     )}
 
-                                    <button className="btn-green" style={{padding:'16px', fontSize:'16px', marginTop:'8px'}} onClick={handleSettle}>Confirm Settlement 🤝</button>
+                                    <button className="btn-green hover-up" style={{padding:'18px', fontSize:'18px', marginTop:'8px', borderRadius:'18px'}} onClick={handleSettle}>Record Settlement ✅</button>
                                 </div>
                                 <SearchableCurrencyPicker 
                                     show={showCurrPickerId === 'settle'} 
@@ -1849,10 +2092,6 @@
                     setNewlyAddedFriends([]); // Clear after sync
                 }
             }, [newlyAddedFriends]);
-
-            useEffect(() => {
-                setActiveSplitters(selectedSplitters);
-            }, [selectedSplitters, setActiveSplitters]);
             const [title, setTitle] = useState(editingExpense?.title || '');
             const [showSuggestions, setShowSuggestions] = useState(false);
             const [selIdx, setSelIdx] = useState(-1);
@@ -1925,7 +2164,16 @@
             const isValid = selectedSplitters.length > 0 && (splitMode === 'Equally' ? (parseFloat(amt) > 0) : splitMode === 'Unequally' ? (Math.abs(totalShares - parseFloat(amt)) < 0.1) : (Math.abs(totalShares - 100) < 0.1));
 
             const handleSave = () => {
-                if(isValid && title && localGId) {
+                if (!title) { alert('Please enter an expense title! 🏷️'); return; }
+                if (!amt || parseFloat(amt) <= 0) { alert('Please enter a valid amount! 💰'); return; }
+                
+                const othersInSplit = selectedSplitters.filter(s => s !== me);
+                if (othersInSplit.length === 0) { 
+                    alert('Split not happening! Please add at least one friend to split this with! 🤝'); 
+                    return; 
+                }
+                
+                if(isValid && localGId) {
                     const newExp = { 
                         id: editingExpense?.id || Date.now(), 
                         gId: localGId, 
@@ -1945,6 +2193,7 @@
                     setShowExpModal(false);
                     setEditingExpense(null);
                 } else {
+                    if (splitMode !== 'Equally') alert('The shares do not add up to the total amount! ⚖️');
                     triggerShake();
                 }
             };
@@ -1971,15 +2220,12 @@
                         setEditingExpense(null);
                         setShowExpModal(false);
                     }
-                    // If Enter is pressed anywhere and the form is valid, save it.
                     if (e.key === 'Enter') {
                         // Allow Enter to work inside inputs unless suggestions are open
                         if (e.target.id === 'exp-title' && showSuggestions) return;
                         
-                        if (isValid && title) {
-                            e.preventDefault();
-                            handleSave();
-                        }
+                        e.preventDefault();
+                        handleSave();
                     }
                 };
                 window.addEventListener('keydown', handleKeyDown);
@@ -2021,7 +2267,7 @@
                         `}</style>
                         <div style={{display:'flex', justifyContent:'space-between', marginBottom:'20px', alignItems:'center'}}>
                             <div>
-                                <h2 className="nunito" style={{fontSize:'22px', fontWeight:'900'}}>{editingExpense ? 'Edit Expense' : (localGId === 'STANDALONE' ? 'New expense' : 'Add to Space')}</h2>
+                                <h2 className="nunito" style={{fontSize:'22px', fontWeight:'900'}}>{editingExpense ? 'Edit Expense' : (localGId === 'STANDALONE' ? 'New expense' : 'Add to Group')}</h2>
                                 <p style={{fontSize:'11px', color:'var(--g)', fontWeight:'800', marginTop:'-2px'}}>
                                     {activeGroup ? `In ${activeGroup.name}` : 'Standalone Split ⚡'}
                                 </p>
@@ -2030,15 +2276,31 @@
                                 {view !== 'detail' && (
                                     <div style={{position:'relative'}}>
                                         <select value={localGId || 'STANDALONE'} onChange={e => {
-                                            if(e.target.value === 'NEW') {
+                                            const val = e.target.value;
+                                            if(val === 'NEW') {
                                                 const name = prompt('Ledger Name:', 'New Group 🏡');
                                                 if(name) {
                                                     const id = Date.now();
-                                                    setGroups([...groups, {id, name, members:[me], currency:'₹'}]);
+                                                    const newG = {id, name, members:[me], currency:'₹'};
+                                                    setGroups([...groups, newG]);
                                                     setLocalGId(id);
+                                                    setSelectedSplitters([me]);
+                                                    setCurr('₹');
                                                 }
                                             } else {
-                                                setLocalGId(e.target.value === 'STANDALONE' ? 'STANDALONE' : Number(e.target.value));
+                                                const newId = val === 'STANDALONE' ? 'STANDALONE' : val;
+                                                setLocalGId(newId);
+                                                const newG = groups.find(g => String(g.id) === String(newId));
+                                                if (newG) {
+                                                    setSelectedSplitters([...newG.members]);
+                                                    setCurr(newG.currency || '₹');
+                                                } else {
+                                                    setSelectedSplitters([me]);
+                                                    setCurr('₹');
+                                                }
+                                                setShares({});
+                                                setManualEdits(new Set());
+                                                setPayer(me);
                                             }
                                         }} style={{appearance:'none', background:'#F1F5F9', border:'none', padding:'10px 36px 10px 16px', borderRadius:'14px', fontSize:'13px', fontWeight:'900', color:'#1E293B', cursor:'pointer', outline:'none', textAlign:'left', minWidth:'160px', boxShadow:'inset 0 1px 2px rgba(0,0,0,0.05)'}}>
                                             <option value="STANDALONE">⚡ Standalone Split</option>
@@ -2136,9 +2398,7 @@
                                             if (e.key === 'Enter') {
                                                 e.preventDefault();
                                                 e.stopPropagation();
-                                                // Move to Paid By or Split Details
-                                                // Paid by is not an input, so let's move to Split Mode select
-                                                document.getElementById('split-mode-select')?.focus();
+                                                handleSave();
                                             }
                                         }}
                                         style={{width:'100%', height:'100%', padding:'0 16px 0 60px', fontSize:'18px', fontWeight:'900', textAlign:'left', borderRadius:'12px', border:'2px solid #F8FAFC', background:'#F8FAFC', outline:'none', boxSizing:'border-box', margin:0}} 
@@ -2226,26 +2486,16 @@
                             <div style={{display:'flex', flexDirection:'column', gap:'12px'}}>
                                 <div style={{display:'flex', flexDirection:'column', gap:'4px'}}>
                                     <label style={{fontSize:'10px', fontWeight:'900', color:'var(--g)', textTransform:'uppercase', letterSpacing:'1px'}}>Paid By</label>
-                                    <div style={{display:'flex', gap:'10px', overflowX:'auto', padding:'4px 2px', msOverflowStyle:'none', scrollbarWidth:'none'}} className="no-scrollbar">
-                                        {Array.from(new Set([me, ...selectedSplitters])).map((m, idx) => {
-                                            const isPayer = payer === m;
-                                            const colors = ['#F0F7FF', '#F2FFF9', '#FFF5F7', '#FFFFF0', '#F5F3FF', '#FDF2F8'];
-                                            const textColors = ['#1E40AF', '#065F46', '#9D174D', '#854D0E', '#5B21B6', '#BE185D'];
-                                            const cIdx = idx % colors.length;
-                                            return (
-                                                <div key={m} onClick={() => setPayer(m)} style={{flexShrink:0, display:'flex', flexDirection:'column', alignItems:'center', gap:'6px', cursor:'pointer'}}>
-                                                    <div style={{
-                                                        width:'52px', height:'52px', borderRadius:'16px', background: isPayer ? textColors[cIdx] : colors[cIdx], border:'2px solid ' + (isPayer ? textColors[cIdx] : 'transparent'),
-                                                        display:'flex', alignItems:'center', justifyContent:'center', fontSize:'22px', transition:'0.3s all', 
-                                                        boxShadow: isPayer ? `0 10px 20px -5px ${textColors[cIdx]}66` : 'none',
-                                                        transform: isPayer ? 'translateY(-2px)' : 'none'
-                                                    }}>
-                                                        {m === me ? <img src="splitzilla_laughing_cat_mascot_1778063273427.png" style={{width:'32px', height:'32px', borderRadius:'50%'}} /> : '👤'}
-                                                    </div>
-                                                    <span style={{fontSize:'10px', fontWeight: isPayer ? '900' : '700', color: isPayer ? 'var(--t)' : 'var(--g)', opacity: isPayer ? 1 : 0.6}}>{m === me ? 'You' : m.split(' ')[0]}</span>
-                                                </div>
-                                            );
-                                        })}
+                                    <div style={{position:'relative', width:'100%'}}>
+                                        <select value={payer} onChange={e => setPayer(e.target.value)} style={{
+                                            width:'100%', padding:'12px 16px', fontSize:'14px', fontWeight:'900', borderRadius:'14px', border:'2.5px solid #F1F5F9', 
+                                            background:'#FFFFFF', color:'#0F172A', cursor:'pointer', appearance:'none', outline:'none', boxShadow:'0 4px 10px rgba(0,0,0,0.03)'
+                                        }}>
+                                            {(activeGroup ? activeGroup.members : Array.from(new Set([me, ...selectedSplitters, ...groups.flatMap(g => g.members)]))).map(m => (
+                                                <option key={m} value={m}>{m === me ? 'You (Damini)' : m}</option>
+                                            ))}
+                                        </select>
+                                        <div style={{position:'absolute', right:'16px', top:'50%', transform:'translateY(-50%)', pointerEvents:'none', fontSize:'12px', opacity:0.5}}>▼</div>
                                     </div>
                                 </div>
                             </div>
@@ -2654,7 +2904,7 @@
                             const g = groups.find(x => x.id === s.gId);
                             const isByMe = s.paid === me;
                             return (
-                                <div key={s.id} className="card hover-up" style={{padding:'24px', display:'flex', justifyContent:'space-between', alignItems:'center', border:'1.5px solid #F1F5F9', background:'white'}}>
+                                <div key={s.id} className="card hover-up" onClick={() => { setEditingExpense(s); setShowExpModal(true); }} style={{padding:'24px', display:'flex', justifyContent:'space-between', alignItems:'center', border:'1.5px solid #F1F5F9', background:'white', cursor:'pointer', position:'relative'}}>
                                     <div style={{display:'flex', alignItems:'center', gap:'20px'}}>
                                         <div style={{width:'56px', height:'56px', background: isByMe ? '#ECFDF5' : '#EFF6FF', borderRadius:'18px', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'28px'}}>
                                             {isByMe ? '📤' : '📥'}
@@ -2662,17 +2912,28 @@
                                         <div>
                                             <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
                                                 <h3 className="nunito" style={{fontSize:'18px', color:'#1E293B'}}>{isByMe ? 'You Paid' : `${s.paid} Paid You`}</h3>
-                                                <span className="pill" style={{fontSize:'9px', padding:'4px 8px', background:'#F8FAFC', color:'var(--g)'}}>{g?.name || 'Group'}</span>
+                                                <span onClick={(ev) => { ev.stopPropagation(); if(s.gId !== 'STANDALONE') { setSelectedId(s.gId); setView('detail'); } }} className="pill" style={{fontSize:'9px', padding:'4px 8px', background:'#F8FAFC', color:'var(--g)', cursor:'pointer'}}>{g?.name || 'Group'}</span>
                                             </div>
                                             <p style={{fontSize:'11px', fontWeight:'800', color:'var(--g)', marginTop:'4px'}}>
                                                 {isByMe ? `To: ${s.splitters?.[0]}` : `From: ${s.paid}`} • {s.date}
                                             </p>
                                         </div>
                                     </div>
-                                    <div style={{textAlign:'right'}}>
-                                        <div style={{fontSize:'22px', fontWeight:'900', color:'#0F172A'}}>{s.currency || '₹'}{s.amt.toLocaleString()}</div>
-                                        <div className="pill" style={{marginTop:'4px', background: isByMe ? '#D1FAE5' : '#DBEAFE', color: isByMe ? '#065F46' : '#1E40AF', fontSize:'10px', fontWeight:'900'}}>Cleared ✅</div>
-                                    </div>
+                                        <div style={{display:'flex', alignItems:'center', gap:'16px'}}>
+                                            <div style={{textAlign:'right'}}>
+                                                <div style={{fontSize:'22px', fontWeight:'900', color:'#0F172A'}}>{s.currency || '₹'}{(parseFloat(s.amt) || 0).toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 2})}</div>
+                                                <div className="pill" style={{marginTop:'4px', background: isByMe ? '#D1FAE5' : '#DBEAFE', color: isByMe ? '#065F46' : '#1E40AF', fontSize:'10px', fontWeight:'900'}}>Cleared ✅</div>
+                                            </div>
+                                            <div className="dropdown" style={{position:'relative'}} onClick={(ev) => ev.stopPropagation()}>
+                                                <div style={{fontSize:'24px', color:'var(--g)', padding:'4px', cursor:'pointer', opacity:0.4}} onClick={() => setOpenDropdownId(openDropdownId === s.id ? null : s.id)}>⋮</div>
+                                                {openDropdownId === s.id && (
+                                                    <div className="card shadow-xl" style={{position:'absolute', right:0, top:'100%', background:'white', zIndex:100, minWidth:'120px', padding:'8px', borderRadius:'12px', border:'1.5px solid #F1F5F9'}}>
+                                                        <div onClick={() => { setEditingExpense(s); setShowExpModal(true); setOpenDropdownId(null); }} style={{padding:'10px 12px', fontSize:'12px', fontWeight:'800', cursor:'pointer', borderRadius:'8px'}} className="hover-bg">✏️ Edit</div>
+                                                        <div onClick={() => { if(confirm('Delete this payment record?')) deleteExpense(s.id); setOpenDropdownId(null); }} style={{padding:'10px 12px', fontSize:'12px', fontWeight:'800', cursor:'pointer', color:'#DB2777', borderRadius:'8px'}} className="hover-bg">🗑️ Delete</div>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
                                 </div>
                             );
                         })}
@@ -2681,25 +2942,28 @@
             );
         };
 
-        const FriendsView = ({ groups, expenses, me, setView, setSelectedId, setGlobalSettleData, BalanceDisplay }) => {
+        const FriendsView = ({ groups, expenses, me, setView, setSelectedId, setGlobalSettleData, BalanceDisplay, userMetadata, setUserMetadata }) => {
             const masterBal = {};
-            // Calculate balances from ALL expenses (Grouped + Standalone)
             expenses.forEach(e => {
-                const splitters = e.splitters || [];
+                const g = groups.find(x => x.id === e.gId);
+                const isStandalone = e.gId === 'STANDALONE';
+                const splitters = (e.splitters && e.splitters.length > 0) ? e.splitters : (isStandalone ? [e.paid] : (g?.members || [e.paid]));
                 const amount = parseFloat(e.amt) || 0;
                 const payer = e.paid;
+                const curr = e.currency || g?.currency || '₹';
                 
-                splitters.forEach(m => {
-                    if (m === me) return; // Don't track self
-                    if (!masterBal[m]) masterBal[m] = {};
-                    const curr = e.currency || '₹';
-                    
+                if (payer === me) {
+                    splitters.forEach(m => {
+                        if (m === me) return;
+                        if (!masterBal[m]) masterBal[m] = {};
+                        const otherShare = (!e.mode || e.mode === 'Equally') ? (amount / splitters.length) : (e.mode === 'Unequally' ? (parseFloat(e.shares?.[m]) || 0) : (amount * (parseFloat(e.shares?.[m]) || 0) / 100));
+                        masterBal[m][curr] = (masterBal[m][curr] || 0) + otherShare;
+                    });
+                } else if (splitters.includes(me)) {
+                    if (!masterBal[payer]) masterBal[payer] = {};
                     const myShare = (!e.mode || e.mode === 'Equally') ? (amount / splitters.length) : (e.mode === 'Unequally' ? (parseFloat(e.shares?.[me]) || 0) : (amount * (parseFloat(e.shares?.[me]) || 0) / 100));
-                    const otherShare = (!e.mode || e.mode === 'Equally') ? (amount / splitters.length) : (e.mode === 'Unequally' ? (parseFloat(e.shares?.[m]) || 0) : (amount * (parseFloat(e.shares?.[m]) || 0) / 100));
-                    
-                    if (payer === me) masterBal[m][curr] = (masterBal[m][curr] || 0) + otherShare;
-                    if (payer === m) masterBal[m][curr] = (masterBal[m][curr] || 0) - myShare;
-                });
+                    masterBal[payer][curr] = (masterBal[payer][curr] || 0) - myShare;
+                }
             });
 
             const friends = Object.entries(masterBal).map(([name, bals]) => ({ name, bals }));
@@ -2717,14 +2981,17 @@
                             const isOwe = Object.values(f.bals).some(v => v < -0.01);
                             
                             return (
-                                <div key={f.name} className="card hover-up" style={{padding:'24px', background:'white', border:'1.5px solid #F1F5F9', position:'relative'}}>
-                                    <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'20px'}}>
+                                <div key={f.name} className="card hover-up" style={{padding:'24px', background:'white', border:'1.5px solid #F1F5F9', position:'relative', display:'flex', flexDirection:'column', minHeight:'180px'}}>
+                                    <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'16px'}}>
                                         <div style={{display:'flex', alignItems:'center', gap:'12px'}}>
                                             <div style={{width:'48px', height:'48px', borderRadius:'16px', background: isOwed ? '#D1FAE5' : isOwe ? '#FFE4E6' : '#F1F5F9', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'24px'}}>
                                                 {isOwed ? '📈' : isOwe ? '📉' : '🤝'}
                                             </div>
                                             <div>
-                                                <h3 className="nunito" style={{fontSize:'18px', fontWeight:'900'}}>{f.name}</h3>
+                                                <div style={{display:'flex', alignItems:'center', gap:'8px'}}>
+                                                    <h3 className="nunito" style={{fontSize:'18px', fontWeight:'900'}}>{f.name}</h3>
+                                                    {userMetadata[f.name]?.upiId && <span title="Payment Linked" style={{fontSize:'14px', cursor:'help'}}>💳</span>}
+                                                </div>
                                                 <p style={{fontSize:'11px', fontWeight:'800', color:'var(--g)', textTransform:'uppercase'}}>Global Contact</p>
                                             </div>
                                         </div>
@@ -2733,12 +3000,8 @@
                                         </div>
                                     </div>
                                     
-                                    <div style={{display:'flex', gap:'10px'}}>
-                                        <button onClick={() => setGlobalSettleData({ name: f.name, balances: f.bals })} className="btn-green" style={{flex:1, padding:'10px', fontSize:'12px'}}>Clear Dues 💸</button>
-                                        <button onClick={() => {
-                                            const commonGroup = groups.find(g => g.members.includes(f.name));
-                                            if(commonGroup) { setSelectedId(commonGroup.id); setView('detail'); }
-                                        }} className="btn-blue" style={{flex:1, padding:'10px', fontSize:'12px', background:'#EFF6FF', color:'#3B82F6', border:'1.5px solid #DBEAFE'}}>View Group 🏘️</button>
+                                    <div style={{marginTop:'auto', display:'flex', gap:'8px'}}>
+                                        <button onClick={() => setGlobalSettleData({ name: f.name, bals: f.bals })} className="btn-green" style={{flex:1, padding:'12px', fontSize:'14px', borderRadius:'14px'}}>Clear Dues 💸</button>
                                     </div>
                                 </div>
                             );
@@ -2880,150 +3143,296 @@
                         <div className="card" style={{padding:'32px', border:'1.5px solid rgba(239, 68, 68, 0.1)', background:'rgba(255, 241, 242, 0.5)'}}>
                             <h3 className="nunito" style={{fontSize:'20px', fontWeight:'900', color:'#991B1B', marginBottom:'16px', display:'flex', alignItems:'center', gap:'12px'}}>⚠️ Danger Zone</h3>
                             <p style={{fontSize:'12px', fontWeight:'700', color:'#991B1B', opacity:0.7, marginBottom:'24px'}}>Once you reset, all groups, expenses, and local data will be permanently erased. Please be careful.</p>
-                            <button className="btn-red" style={{width:'100%', background:'#EF4444', border:'none', color:'white', padding:'16px', borderRadius:'16px', fontWeight:'900', boxShadow:'0 10px 15px -3px rgba(239, 68, 68, 0.3)'}} onClick={handleHardReset}>🚨 Hard Reset Everything</button>
+                            <button className="btn-red" style={{width:'100%'}} onClick={handleHardReset}>🚨 Hard Reset Everything</button>
                         </div>
                     </div>
                 </div>
             );
         };
 
-        const CurrencyConverterModal = ({ setShowConvertModalId, group, setGroups, groups, expenses, setExpenses, me }) => {
-            const [targetCurr, setTargetCurr] = useState(group.currency === '₹' ? '$' : '₹');
-            const [rate, setRate] = useState(group.currency === '₹' ? '0.0106' : '94.44');
-            const [isConverting, setIsConverting] = useState(false);
-            const [isFetching, setIsFetching] = useState(false);
+        const ManualRateRow = ({ c, targetCurr, initialRate, onUpdate }) => {
+            const [isInverted, setIsInverted] = useState(false);
+            const [localVal, setLocalVal] = useState(initialRate);
 
-            const fetchLiveRate = async (base, target) => {
+            const handleLocalChange = (val) => {
+                setLocalVal(val);
+                const num = parseFloat(val);
+                if (num > 0) {
+                    const finalRate = isInverted ? (1 / num).toFixed(6) : num.toString();
+                    onUpdate(finalRate);
+                }
+            };
+
+            return (
+                <div style={{background:'white', padding:'12px 16px', borderRadius:'18px', border:'1.5px solid #F1F5F9'}}>
+                    <div style={{display:'flex', alignItems:'center', gap:'8px', fontSize:'13px', fontWeight:'950', color:'var(--t)'}}>
+                        <span style={{opacity:0.4}}>1</span> 
+                        <span style={{color:'#6366F1'}}>{isInverted ? targetCurr : c}</span>
+                        <span>=</span>
+                        <input 
+                            type="number" 
+                            value={localVal} 
+                            onChange={e => handleLocalChange(e.target.value)}
+                            style={{flex:1, minWidth:'80px', padding:'10px', borderRadius:'10px', border:'1.5px solid #EEF2FF', background:'#F8FAFC', textAlign:'center', fontWeight:'950', outline:'none', fontSize:'14px'}}
+                        />
+                        <span style={{color:'#6366F1'}}>{isInverted ? c : targetCurr}</span>
+                        <button 
+                            onClick={() => {
+                                const newInv = !isInverted;
+                                setIsInverted(newInv);
+                                const currentRate = parseFloat(localVal);
+                                if (currentRate > 0) {
+                                    const newVal = (1 / currentRate).toFixed(4);
+                                    setLocalVal(newVal);
+                                }
+                            }}
+                            style={{width:'32px', height:'32px', borderRadius:'8px', border:'none', background:'#F5F3FF', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'14px'}}
+                        >
+                            🔄
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
+        const CurrencyConverterModal = ({ setShowConvertModalId, group, setGroups, groups, expenses, setExpenses, me, worldCurrencies }) => {
+            const [targetCurr, setTargetCurr] = useState(group.currency === '₹' ? '$' : '₹');
+            const [isConverting, setIsConverting] = useState(false);
+            const [showCurrPickerId, setShowCurrPickerId] = useState(null);
+            const [rateMap, setRateMap] = useState({});
+            const [isFetching, setIsFetching] = useState(false);
+            const [isManual, setIsManual] = useState(false);
+
+            const detectedCurrs = useMemo(() => {
+                const groupExpenses = expenses.filter(e => String(e.gId) === String(group.id) && !e.isConversion);
+                // ONLY look at what is actually in the transactions
+                const activeInFeed = groupExpenses.map(e => e.currency || group.currency).filter(c => c && c.trim() && c !== 'undefined');
+                const unique = [...new Set(activeInFeed)];
+                
+                // If feed is totally empty, just show the group's home currency
+                return unique.length > 0 ? unique : [group.currency];
+            }, [expenses, group]);
+
+            const [selectedSource, setSelectedSource] = useState(detectedCurrs[0]);
+
+            // Force-sync every time the list changes
+            useEffect(() => {
+                setSelectedSource(detectedCurrs[0]);
+            }, [detectedCurrs]);
+
+            const fetchAllRates = async (target) => {
                 setIsFetching(true);
+                const newRates = {};
                 try {
-                    const res = await fetch(`https://open.er-api.com/v6/latest/${base === '₹' ? 'INR' : base === '$' ? 'USD' : base === '€' ? 'EUR' : 'GBP'}`);
-                    const data = await res.json();
-                    const targetCode = target === '₹' ? 'INR' : target === '$' ? 'USD' : target === '€' ? 'EUR' : 'GBP';
-                    if (data.rates && data.rates[targetCode]) {
-                        setRate(data.rates[targetCode].toFixed(4));
+                    for (const from of detectedCurrs) {
+                        const fromCode = worldCurrencies.find(c => c.s === from)?.c || from;
+                        const toCode = worldCurrencies.find(c => c.s === target)?.c || target;
+                        if (fromCode === toCode) {
+                            newRates[from] = '1.0000';
+                            continue;
+                        }
+                        const res = await fetch(`https://open.er-api.com/v6/latest/${fromCode}`);
+                        const data = await res.json();
+                        if (data.result === 'success' && data.rates[toCode]) {
+                            newRates[from] = (data.rates[toCode]).toFixed(4);
+                        } else {
+                            throw new Error(`Could not get rate for ${from}`);
+                        }
                     }
+                    setRateMap(newRates);
                 } catch (e) {
                     console.error("Rate fetch failed", e);
+                    alert(`⚠️ Finance API error: ${e.message}. Please enter rates manually.`);
+                    // Default to current rate map to avoid wiping existing manual entries
                 } finally {
                     setIsFetching(false);
                 }
             };
 
-            const handleConvert = () => {
+            useEffect(() => {
+                fetchAllRates(targetCurr);
+            }, [targetCurr]);
+
+            const handleConvert = async () => {
                 setIsConverting(true);
-                setTimeout(() => {
-                    const r = parseFloat(rate) || 1;
-                    // Update Group Currency
-                    setGroups(groups.map(g => g.id === group.id ? {...g, currency: targetCurr} : g));
-                    
-                    // Update Group Expenses
-                    setExpenses(prev => {
-                        const updated = prev.map(e => {
-                            if (String(e.gId) === String(group.id)) {
-                                if (e.isConversion) return e; // Skip conversion logs
+                await new Promise(r => setTimeout(r, 800));
+
+                const activeConversions = new Set();
+                const snapshot = expenses
+                    .filter(e => String(e.gId) === String(group.id) && !e.isConversion)
+                    .map(e => ({
+                        id: e.id,
+                        amt: e.amt,
+                        currency: e.currency || group.currency,
+                        shares: e.shares ? JSON.parse(JSON.stringify(e.shares)) : undefined
+                    }));
+                
+                setExpenses(prev => {
+                    let modificationOccurred = false;
+                    const updated = prev.map(e => {
+                        if (String(e.gId) === String(group.id)) {
+                            if (e.isConversion) return e; 
+                            const currentCurr = e.currency || group.currency;
+                            
+                            if (currentCurr !== targetCurr) {
+                                modificationOccurred = true;
+                                activeConversions.add(currentCurr);
                                 
-                                const newShares = {};
-                                if (e.mode === 'Unequally' && e.shares) {
-                                    Object.entries(e.shares).forEach(([m, s]) => {
-                                        newShares[m] = s * r;
-                                    });
+                                // Perfection logic: use snapshot if returning home
+                                let newAmt, ns;
+                                const isReturning = (e.prevCurr === targetCurr && e.origAmt !== undefined);
+                                if (isReturning) {
+                                    newAmt = e.origAmt;
+                                    ns = e.origShares;
+                                } else {
+                                    const r = parseFloat(rateMap[currentCurr]) || 1;
+                                    newAmt = Math.round((e.amt * r) * 10) / 10;
+                                    const computedShares = {};
+                                    if (e.mode === 'Unequally' && e.shares) {
+                                        Object.entries(e.shares).forEach(([m, s]) => {
+                                            computedShares[m] = Math.round((s * r) * 10) / 10;
+                                        });
+                                    }
+                                    ns = Object.keys(computedShares).length > 0 ? computedShares : e.shares;
                                 }
-                                
+
                                 return {
                                     ...e,
-                                    amt: e.amt * r,
+                                    amt: newAmt,
                                     currency: targetCurr,
-                                    shares: Object.keys(newShares).length > 0 ? newShares : e.shares
+                                    // Keep internal tracking for perfection, but rely on activity snapshot for undo
+                                    origAmt: e.origAmt !== undefined ? e.origAmt : e.amt,
+                                    origShares: e.origShares !== undefined ? e.origShares : e.shares,
+                                    prevCurr: currentCurr,
+                                    shares: ns
                                 };
                             }
-                            return e;
-                        });
-                        return [{
-                            id: Date.now(),
-                            gId: group.id,
-                            title: `Converted Space to ${targetCurr} ✨`,
-                            amt: 0,
-                            rate: r,
-                            fromCurr: group.currency,
-                            toCurr: targetCurr,
-                            date: new Date().toISOString().split('T')[0],
-                            paid: me,
-                            isConversion: true,
-                            category: '💱'
-                        }, ...updated];
+                        }
+                        return e;
                     });
                     
-                    setIsConverting(false);
-                    setShowConvertModalId(null);
-                    alert(`Success! Ledger converted to ${targetCurr} at rate ${rate} 🎊`);
-                }, 1500);
+                    if (!modificationOccurred) {
+                        alert("Ledger is already normalized! 💎");
+                        return prev;
+                    }
+
+                    setGroups(groups.map(g => g.id === group.id ? {...g, currency: targetCurr} : g));
+
+                    const filteredRates = {};
+                    activeConversions.forEach(c => {
+                        filteredRates[c] = rateMap[c];
+                    });
+
+                    return [{
+                        id: Date.now(),
+                        gId: group.id,
+                        title: `Currency Conversion to ${targetCurr} 💎`,
+                        amt: 0,
+                        isNormalization: true,
+                        ratesUsed: JSON.stringify(filteredRates),
+                        snapshot: JSON.stringify(snapshot), // 🛡️ ATOMIC BACKUP
+                        toCurr: targetCurr,
+                        fromCurr: Array.from(activeConversions)[0] || group.currency,
+                        date: new Date().toISOString().split('T')[0],
+                        paid: me,
+                        isConversion: true,
+                        category: '💱'
+                    }, ...updated];
+                });
+                
+                setShowConvertModalId(null);
             };
 
             return (
                 <div className="modal-overlay" onClick={() => setShowConvertModalId(null)} style={{zIndex: 3000, display:'flex', alignItems:'center', justifyContent:'center'}}>
-                    <div className="card shadow-xl" style={{width:'420px', padding:'32px', position:'relative', textAlign:'center', animation:'slideUp 0.3s ease-out'}} onClick={e => e.stopPropagation()}>
-                        <div onClick={() => setShowConvertModalId(null)} style={{position:'absolute', top:'16px', right:'16px', cursor:'pointer', fontSize:'20px', opacity:0.3}}>✕</div>
-                        <div style={{width:'64px', height:'64px', background:'#F5F3FF', borderRadius:'20px', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'32px', margin:'0 auto 20px', border:'2.5px solid #DDD6FE'}}>💱</div>
-                        <h3 className="nunito" style={{fontSize:'22px', fontWeight:'900', marginBottom:'8px'}}>Convert Group Currency</h3>
-                        <p style={{fontSize:'12px', fontWeight:'700', color:'var(--g)', opacity:0.7, marginBottom:'28px'}}>Switch all ledger balances to a new currency using real-time forex rates.</p>
+                    <div className="card shadow-xl" style={{width:'400px', padding:'32px', position:'relative', textAlign:'center', animation:'slideUp 0.3s ease-out'}} onClick={e => e.stopPropagation()}>
+                        <div onClick={() => setShowConvertModalId(null)} style={{position:'absolute', top:'16px', right:'16px', cursor:'pointer', fontSize:'24px', opacity:0.2}}>✕</div>
                         
-                        <div style={{display:'flex', flexDirection:'column', gap:'16px', marginBottom:'32px'}}>
-                            <div style={{textAlign:'left'}}>
-                                <label style={{fontSize:'10px', fontWeight:'950', color:'var(--g)', textTransform:'uppercase', letterSpacing:'1px'}}>Target Currency</label>
-                                <select value={targetCurr} onChange={e => {
-                                    const val = e.target.value;
-                                    setTargetCurr(val);
-                                    if (group.currency === '₹' && val === '$') setRate('0.0106');
-                                    else if (group.currency === '$' && val === '₹') setRate('94.44');
-                                    else if (group.currency === '₹' && val === '€') setRate('0.0090');
-                                    else if (group.currency === '€' && val === '₹') setRate('111.30');
-                                    else setRate('1.00'); 
-                                }} style={{width:'100%', padding:'16px', borderRadius:'16px', border:'2px solid #F1F5F9', background:'#F8FAFC', fontSize:'16px', fontWeight:'900', color:'var(--t)', marginTop:'6px', outline:'none', cursor:'pointer'}}>
-                                    <option value="₹">INR - Indian Rupee (₹)</option>
-                                    <option value="$">USD - US Dollar ($)</option>
-                                    <option value="€">EUR - Euro (€)</option>
-                                    <option value="£">GBP - British Pound (£)</option>
-                                    <option value="¥">JPY - Japanese Yen (¥)</option>
-                                    <option value="AED">AED - Dirham (د.إ)</option>
+                        <div style={{fontSize:'11px', fontWeight:'950', color:'#6366F1', background:'#EEF2FF', padding:'6px 12px', borderRadius:'100px', display:'inline-flex', alignItems:'center', gap:'6px', marginBottom:'20px'}}>
+                            <span className={isFetching ? 'spin' : ''}>🌍</span> {isFetching ? 'Fetching Live Rates...' : 'Source: Open ER API (Live)'}
+                        </div>
+
+                        <h3 className="nunito" style={{fontSize:'22px', fontWeight:'900', marginBottom:'12px'}}>Convert Group Currency</h3>
+                        <p style={{fontSize:'13px', fontWeight:'700', color:'var(--g)', lineHeight:'1.5', marginBottom:'32px'}}>
+                            We'll adjust every expense in <span style={{color:'var(--t)'}}>"{group.name}"</span> to your new master currency.
+                        </p>
+
+                        <div style={{display:'flex', alignItems:'center', justifyContent:'center', gap:'16px', marginBottom:'32px'}}>
+                            <div style={{textAlign:'center', flex:1}}>
+                                <div style={{fontSize:'10px', fontWeight:'900', color:'var(--g)', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'8px'}}>From Feed</div>
+                                <select 
+                                    value={selectedSource} 
+                                    onChange={e => setSelectedSource(e.target.value)}
+                                    style={{width:'100%', padding:'12px', borderRadius:'14px', border:'2px solid #F1F5F9', background:'white', fontSize:'18px', fontWeight:'950', textAlign:'center', cursor:'pointer', outline:'none'}}
+                                >
+                                    {detectedCurrs.map(c => <option key={c} value={c}>{c}</option>)}
                                 </select>
                             </div>
-                            
-                            <div style={{background:'#F0FDF4', padding:'16px', borderRadius:'16px', border:'1.5px solid #DCFCE7', textAlign:'left'}}>
-                                <div style={{display:'flex', justifyContent:'space-between', marginBottom:'4px'}}>
-                                    <label style={{fontSize:'10px', fontWeight:'950', color:'#166534', textTransform:'uppercase'}}>Exchange Rate (1 {group.currency} = ? {targetCurr})</label>
+                            <div style={{fontSize:'20px', opacity:0.2, marginTop:'20px'}}>➔</div>
+                            <div style={{textAlign:'center', flex:1}}>
+                                <div style={{fontSize:'10px', fontWeight:'900', color:'var(--accent)', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'8px'}}>Master Target</div>
+                                <div 
+                                    onClick={() => setShowCurrPickerId('CONVERT_TARGET')} 
+                                    style={{padding:'12px', borderRadius:'14px', border:'2px solid #F1F5F9', background:'white', fontSize:'18px', fontWeight:'950', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', cursor:'pointer'}}
+                                >
+                                    {targetCurr} <span style={{fontSize:'12px', opacity:0.3}}>✏️</span>
                                 </div>
-                                <div style={{position:'relative', display:'flex', alignItems:'center', justifyContent:'space-between'}}>
-                                    <input 
-                                        type="number" 
-                                        value={rate} 
-                                        onChange={e => setRate(e.target.value)}
-                                        style={{flex:1, background:'transparent', border:'none', fontSize:'18px', fontWeight:'950', color:'#14532D', outline:'none', padding:0}}
-                                    />
-                                    <button 
-                                        onClick={() => fetchLiveRate(group.currency, targetCurr)}
-                                        disabled={isFetching}
-                                        style={{padding:'6px 12px', background:'#166534', color:'white', border:'none', borderRadius:'8px', fontSize:'9px', fontWeight:'950', cursor:'pointer'}}
-                                    >
-                                        {isFetching ? '...' : '⚡ Fetch Live'}
-                                    </button>
-                                </div>
-                                <p style={{fontSize:'10px', fontWeight:'700', color:'#15803D', marginTop:'4px'}}>💡 Live rates from Open ER API. You can also manually adjust.</p>
                             </div>
                         </div>
 
+                        {!isManual ? (
+                            <div style={{marginBottom:'32px', padding:'20px', background:'#F8FAFC', borderRadius:'24px', border:'1.5px solid #F1F5F9'}}>
+                                <div style={{fontSize:'12px', fontWeight:'800', color:'var(--g)', marginBottom:'12px'}}>Auto-Exchange Rate:</div>
+                                <div style={{fontSize:'20px', fontWeight:'950', color:'var(--t)', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px'}}>
+                                    1 {selectedSource} = {rateMap[selectedSource] || '...'} {targetCurr}
+                                </div>
+                                {detectedCurrs.length > 1 && (
+                                    <div style={{fontSize:'10px', fontWeight:'800', color:'var(--g)', marginTop:'8px', opacity:0.6}}>
+                                        +{detectedCurrs.length - 1} other currencies will also be converted.
+                                    </div>
+                                )}
+                                <button onClick={() => setIsManual(true)} style={{marginTop:'16px', background:'none', border:'none', color:'#6366F1', fontWeight:'900', fontSize:'11px', cursor:'pointer', textDecoration:'underline'}}>Edit Manually</button>
+                            </div>
+                        ) : (
+                            <div style={{textAlign:'left', marginBottom:'32px'}}>
+                                <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px'}}>
+                                    <label style={{fontSize:'10px', fontWeight:'900', color:'var(--g)', textTransform:'uppercase', letterSpacing:'1px'}}>Manual Overrides</label>
+                                    <button onClick={() => setIsManual(false)} style={{background:'none', border:'none', color:'var(--g)', fontWeight:'900', fontSize:'11px', cursor:'pointer'}}>Back to Auto</button>
+                                </div>
+                                <div style={{display:'flex', flexDirection:'column', gap:'12px'}}>
+                                    {detectedCurrs.filter(c => c !== targetCurr).map(c => (
+                                        <ManualRateRow 
+                                            key={c} 
+                                            c={c} 
+                                            targetCurr={targetCurr} 
+                                            initialRate={rateMap[c]} 
+                                            onUpdate={(finalRate) => setRateMap(prev => ({...prev, [c]: finalRate}))}
+                                        />
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        <SearchableCurrencyPicker 
+                            show={showCurrPickerId === 'CONVERT_TARGET'}
+                            onClose={() => setShowCurrPickerId(null)}
+                            onSelect={(s) => setTargetCurr(s)}
+                            current={targetCurr}
+                        />
+
                         <button 
                             className="btn-green hover-up" 
-                            disabled={isConverting || group.currency === targetCurr} 
-                            style={{width:'100%', padding:'18px', fontSize:'16px', marginBottom:'16px', opacity: group.currency === targetCurr ? 0.5 : 1}} 
+                            style={{width:'100%', height:'64px', borderRadius:'24px', fontSize:'17px', fontWeight:'950'}} 
                             onClick={handleConvert}
+                            disabled={isConverting || isFetching}
                         >
-                            {group.currency === targetCurr ? 'Select Different Currency' : isConverting ? 'Processing Conversion...' : 'Confirm Conversion 💸'}
+                            {isConverting ? 'Normalizing...' : `Apply Conversion ✨`}
                         </button>
-                        
-                        <div style={{fontSize:'10px', fontWeight:'800', color:'var(--g)', opacity:0.5, display:'flex', alignItems:'center', justifyContent:'center', gap:'6px'}}>
-                            <span style={{fontSize:'14px'}}>🛡️</span> Source: Real-time Forex API (Open ER)
-                        </div>
                     </div>
+                    <style>{`
+                        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+                        .spin { display: inline-block; animation: spin 1s linear infinite; }
+                    `}</style>
                 </div>
             );
         };
@@ -3041,6 +3450,10 @@
             const [localSettleEdits, setLocalSettleEdits] = useState([]);
             const [isGroupsExpanded, setIsGroupsExpanded] = useState(false);
             const [showConvertModalId, setShowConvertModalId] = useState(null);
+            const [confirmState, setConfirmState] = useState({ show: false, title: '', desc: '', onConfirm: null, type: 'danger' });
+            const [undoStack, setUndoStack] = useState([]);
+            const undoTimerRef = useRef(null);
+
             const [userMetadata, setUserMetadata] = useState(() => {
                 const saved = localStorage.getItem('divido_usermetadata');
                 return (saved && saved !== 'undefined') ? JSON.parse(saved) : {};
@@ -3114,11 +3527,11 @@
                                     gId: g.id,
                                     gName: g.name,
                                     curr: curr,
-                                    amt: Math.abs(val),
-                                    maxAmt: Math.abs(val),
+                                    amt: Math.round(Math.abs(val) * 100) / 100,
+                                    maxAmt: Math.round(Math.abs(val) * 100) / 100,
                                     paidBy: val > 0 ? m : me,
                                     receivedBy: val > 0 ? me : m,
-                                    selected: false,
+                                    selected: false, // User wants manual control
                                     summary: `${relevantExps.length} activities • ${summary}`
                                 });
                             }
@@ -3147,7 +3560,30 @@
                 setGlobalSettleData(null);
             };
 
-            const isModalOpen = !!(showExpModal || showAddFriendModal || showMembersHealth || globalSettleData || showCurrPickerId);
+            const deleteExpense = (id, silent=false) => {
+                const item = expenses.find(e => e.id === id);
+                if (!item) return;
+                
+                setExpenses(prev => prev.filter(e => e.id !== id));
+                
+                if (!silent) {
+                    setUndoStack(prev => [{ item, type: 'expense', timestamp: Date.now() }, ...prev].slice(0, 5));
+                    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+                    undoTimerRef.current = setTimeout(() => {
+                        setUndoStack([]);
+                    }, 6000);
+                }
+            };
+
+            const performUndo = () => {
+                if (undoStack.length === 0) return;
+                const { item } = undoStack[0];
+                setExpenses(prev => [item, ...prev].sort((a, b) => new Date(b.date) - new Date(a.date)));
+                setUndoStack(prev => prev.slice(1));
+                if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+            };
+
+            const isModalOpen = !!(showExpModal || showAddFriendModal || showMembersHealth || globalSettleData || showCurrPickerId || undoStack.length > 0);
             useEffect(() => {
                 if (isModalOpen) document.body.style.overflow = 'hidden';
                 else document.body.style.overflow = 'auto';
@@ -3163,11 +3599,18 @@
                 const isStandalone = String(id) === 'STANDALONE';
                 const g = isStandalone ? { name: 'Standalone Splits ⚡' } : groups.find(x => String(x.id) === String(id));
                 if(!g) return;
-                if(confirm('Are you sure you want to ' + (isStandalone ? 'clear' : 'delete') + ' "' + g.name + '"? This will remove all associated activity.')) {
-                    if(!isStandalone) setGroups(groups.filter(x => String(x.id) !== String(id)));
-                    setExpenses(expenses.filter(e => String(e.gId) !== String(id)));
-                    if(String(selectedId) === String(id)) setView('summary');
-                }
+                setConfirmState({
+                    show: true,
+                    title: isStandalone ? 'Clear Standalone History?' : 'Delete Group?',
+                    desc: `Are you sure you want to ${isStandalone ? 'clear' : 'delete'} "${g.name}"? This will permanently remove all associated activity logs and balances.`,
+                    type: 'danger',
+                    onConfirm: () => {
+                        if(!isStandalone) setGroups(groups.filter(x => String(x.id) !== String(id)));
+                        setExpenses(expenses.filter(e => String(e.gId) !== String(id)));
+                        if(String(selectedId) === String(id)) setView('summary');
+                        setConfirmState({ show: false });
+                    }
+                });
             };
             
             const handleRenameGroup = (id) => {
@@ -3300,13 +3743,13 @@
                                          }}
                                          onClick={() => setIsGroupsExpanded(!isGroupsExpanded)}>
                                         <div style={{display:'flex', alignItems:'center', gap:'12px'}}>
-                                            <span style={{fontSize:'18px'}}>🏘️</span> Groups
+                                            <span style={{fontSize:'18px'}}>🏘️</span> Your Groups
                                         </div>
                                         <span style={{fontSize:'10px', transform: isGroupsExpanded ? 'rotate(180deg)' : 'rotate(0deg)', transition:'0.3s all'}}>▼</span>
                                     </div>
                                     
                                     {isGroupsExpanded && (
-                                        <div style={{width:'100%', display:'flex', flexDirection:'column', gap:'4px', paddingLeft:'8px', borderLeft:'2.5px solid #FDE68A', marginLeft:'12px', marginTop:'8px', marginBottom:'12px'}}>
+                                        <div style={{width:'100%', display:'flex', flexDirection:'column', gap:'12px', paddingLeft:'8px', borderLeft:'2.5px solid #FDE68A', marginLeft:'12px', marginTop:'8px', marginBottom:'12px'}}>
                                             {[ {id: 'STANDALONE', name: 'Standalone Splits ⚡', emoji: '👤'}, ...groups ].map((g, i) => {
                                                 const c = g.id === 'STANDALONE' ? { bg: '#F5F3FF', border: '#C4B5FD', text: '#5B21B6' } : GROUP_COLORS[i % GROUP_COLORS.length];
                                                 const isActive = selectedId===g.id&&view==='detail';
@@ -3332,6 +3775,15 @@
                                                     </div>
                                                 );
                                             })}
+                                            <button 
+                                                onClick={() => { const id = Date.now(); setGroups([...groups, {id, name:'', members:[me], currency: '₹'}]); setSelectedId(id); setView('detail'); }}
+                                                style={{
+                                                    display:'flex', alignItems:'center', gap:'12px', padding:'12px 16px', borderRadius:'14px', 
+                                                    background:'rgba(16, 185, 129, 0.05)', color:'#059669', border:'1.5px dashed #10B981',
+                                                    fontSize:'13px', fontWeight:'950', cursor:'pointer', width:'calc(100% - 12px)', transition:'0.2s all', marginTop:'8px'
+                                                }} className="hover-up">
+                                                <span>✨</span> New Group
+                                            </button>
                                         </div>
                                     )}
                                 </div>
@@ -3370,18 +3822,26 @@
                                      width:'100%', background: 'linear-gradient(135deg, #FDA4AF 0%, #FB7185 100%)', color:'white', fontWeight:'950', 
                                      boxShadow:'0 10px 15px -3px rgba(251, 113, 133, 0.2)', justifyContent:'center', borderRadius:'14px', height:'44px'
                                  }} 
-                                 onClick={() => { if(confirm('Logout & Clear all local data?')) { localStorage.clear(); window.location.reload(); } }}>
+                                 onClick={() => { 
+                                     setConfirmState({
+                                         show: true,
+                                         title: 'Logout & Clear Data?',
+                                         desc: 'This will wipe all your groups and expenses from this device. Make sure you have a backup if needed!',
+                                         type: 'danger',
+                                         onConfirm: () => { localStorage.clear(); window.location.reload(); }
+                                     });
+                                 }}>
                                 🚪 Logout
                             </div>
                         </div>
                     </aside>
                     <main className="main-content">
-                        {view === 'summary' ? <MasterSummary groups={groups} expenses={expenses} getMemberBalance={getMemberBalance} setSelectedId={setSelectedId} setView={setView} setGroups={setGroups} setExpenses={setExpenses} setShowCurrPickerId={setShowCurrPickerId} showCurrPickerId={showCurrPickerId} handleRenameGroup={handleRenameGroup} handleDeleteGroup={handleDeleteGroup} me={me} setShowExpModal={setShowExpModal} setEditingExpense={setEditingExpense} globalSettleData={globalSettleData} setGlobalSettleData={setGlobalSettleData} /> : 
-                         view === 'friends' ? <FriendsView groups={groups} expenses={expenses} me={me} setView={setView} setSelectedId={setSelectedId} setGlobalSettleData={setGlobalSettleData} globalSettleData={globalSettleData} BalanceDisplay={BalanceDisplay} /> :
+                        {view === 'summary' ? <MasterSummary groups={groups} expenses={expenses} getMemberBalance={getMemberBalance} setSelectedId={setSelectedId} setView={setView} setGroups={setGroups} setExpenses={setExpenses} setShowCurrPickerId={setShowCurrPickerId} showCurrPickerId={showCurrPickerId} handleRenameGroup={handleRenameGroup} handleDeleteGroup={handleDeleteGroup} me={me} setShowExpModal={setShowExpModal} setEditingExpense={setEditingExpense} globalSettleData={globalSettleData} setGlobalSettleData={setGlobalSettleData} userMetadata={userMetadata} setUserMetadata={setUserMetadata} BalanceDisplay={BalanceDisplay} /> : 
+                         view === 'friends' ? <FriendsView groups={groups} expenses={expenses} me={me} setView={setView} setSelectedId={setSelectedId} setGlobalSettleData={setGlobalSettleData} globalSettleData={globalSettleData} BalanceDisplay={BalanceDisplay} userMetadata={userMetadata} setUserMetadata={setUserMetadata} /> :
                          view === 'analytics' ? <Analytics expenses={expenses} groups={groups} me={me} /> : 
-                         view === 'activity' ? <ActivityStudio expenses={expenses} groups={groups} setExpenses={setExpenses} setEditingExpense={setEditingExpense} setShowExpModal={setShowExpModal} me={me} setShowConvertModalId={setShowConvertModalId} setGroups={setGroups} /> :
+                         view === 'activity' ? <ActivityStudio expenses={expenses} groups={groups} setExpenses={setExpenses} setEditingExpense={setEditingExpense} setShowExpModal={setShowExpModal} me={me} setShowConvertModalId={setShowConvertModalId} setGroups={setGroups} deleteExpense={deleteExpense} setSelectedId={setSelectedId} setView={setView} /> :
                          view === 'profile' ? <Profile groups={groups} handleHardReset={() => { if(confirm('Hard Reset?')) { localStorage.clear(); window.location.reload(); } }} currentTheme={theme} onThemeChange={setTheme} userName={userName} setUserName={setUserName} me={me} /> : 
-                         <GroupDetail selectedId={selectedId} groups={groups} expenses={expenses} getMemberBalance={getMemberBalance} setView={setView} setGroups={setGroups} setShowExpModal={setShowExpModal} setEditingExpense={setEditingExpense} setExpenses={setExpenses} setShowAddFriendModal={setShowAddFriendModal} setShowMembersHealth={setShowMembersHealth} setShowCurrPickerId={setShowCurrPickerId} showCurrPickerId={showCurrPickerId} me={me} setShowConvertModalId={setShowConvertModalId} userMetadata={userMetadata} />}
+                         <GroupDetail selectedId={selectedId} groups={groups} expenses={expenses} getMemberBalance={getMemberBalance} setView={setView} setGroups={setGroups} setShowExpModal={setShowExpModal} setEditingExpense={setEditingExpense} setExpenses={setExpenses} setShowAddFriendModal={setShowAddFriendModal} setShowMembersHealth={setShowMembersHealth} setShowCurrPickerId={setShowCurrPickerId} showCurrPickerId={showCurrPickerId} me={me} setShowConvertModalId={setShowConvertModalId} userMetadata={userMetadata} deleteExpense={deleteExpense} />}
                     </main>
                     <div className="fab-glow"></div>
                     <div className="fab-container">
@@ -3424,6 +3884,7 @@
                             expenses={expenses}
                             setExpenses={setExpenses}
                             me={me}
+                            worldCurrencies={worldCurrencies}
                         />
                     )}
                     {showAddFriendModal && <AddFriendModal 
@@ -3491,39 +3952,35 @@
                                 <p style={{textAlign:'center', color:'var(--g)', fontSize:'11px', fontWeight:'800', marginBottom:'24px'}}>Breakdown across all shared groups</p>
                                 
                                 <div style={{display:'flex', flexDirection:'column', gap:'12px', maxHeight:'350px', overflowY:'auto', paddingRight:'4px', marginBottom:'24px'}}>
-                                    {localSettleEdits.map((item, idx) => (
-                                        <div key={idx} style={{background: item.selected ? 'white' : 'var(--bg)', padding:'16px', borderRadius:'18px', border:'2px solid ' + (item.selected ? 'var(--b)' : '#F1F5F9'), opacity: item.selected ? 1 : 0.6, transition:'0.3s all'}}>
-                                            <div style={{display:'flex', justifyContent:'space-between', marginBottom:'10px', alignItems:'center'}}>
-                                                <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
-                                                    <div onClick={() => setLocalSettleEdits(localSettleEdits.map((it, i) => i === idx ? {...it, selected: !it.selected} : it))} style={{width:'22px', height:'22px', borderRadius:'6px', border:'2px solid ' + (item.selected ? '#10B981' : '#CBD5E1'), background: item.selected ? '#10B981' : 'white', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:'white', fontSize:'12px'}}>
-                                                        {item.selected && '✓'}
+                                    {localSettleEdits.map((item, idx) => {
+                                        const upi = userMetadata[globalSettleData.name]?.upiId;
+                                        return (
+                                            <div key={idx} style={{background: item.selected ? 'white' : 'var(--bg)', padding:'16px', borderRadius:'18px', border:'2px solid ' + (item.selected ? 'var(--b)' : '#F1F5F9'), opacity: 1, transition:'0.3s all'}}>
+                                                <div style={{display:'flex', justifyContent:'space-between', marginBottom:'10px', alignItems:'center'}}>
+                                                    <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
+                                                        <div onClick={() => setLocalSettleEdits(localSettleEdits.map((it, i) => i === idx ? {...it, selected: !it.selected} : it))} style={{width:'22px', height:'22px', borderRadius:'6px', border:'2px solid ' + (item.selected ? '#10B981' : '#CBD5E1'), background: item.selected ? '#10B981' : 'white', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:'white', fontSize:'12px'}}>
+                                                            {item.selected && '✓'}
+                                                        </div>
+                                                        <div style={{display:'flex', flexDirection:'column'}}>
+                                                            <span style={{fontSize:'12px', fontWeight:'900', color:'#1E293B'}}>{item.gName}</span>
+                                                            <span style={{fontSize:'10px', fontWeight:'700', color:'var(--g)', opacity:0.6}}>{item.summary}</span>
+                                                        </div>
                                                     </div>
-                                                    <div style={{display:'flex', flexDirection:'column'}}>
-                                                        <span style={{fontSize:'12px', fontWeight:'900', color:'#1E293B'}}>{item.gName}</span>
-                                                        <span style={{fontSize:'10px', fontWeight:'700', color:'var(--g)', opacity:0.6}}>{item.summary}</span>
-                                                    </div>
+                                                    <span style={{fontSize:'10px', fontWeight:'900', color: item.paidBy === me ? '#DB2777' : '#059669', background: 'white', padding:'2px 8px', borderRadius:'6px', border: '1px solid #F1F5F9'}}>
+                                                        {item.paidBy === me ? 'You Owe' : 'Owes You'}
+                                                    </span>
                                                 </div>
-                                                <span style={{fontSize:'10px', fontWeight:'900', color: item.paidBy === me ? '#DB2777' : '#059669', background: item.selected ? 'var(--bg)' : 'white', padding:'2px 8px', borderRadius:'6px'}}>
-                                                    {item.paidBy === me ? 'You Owe' : 'Owes You'}
-                                                </span>
-                                            </div>
-                                            {item.selected && (
-                                                <div style={{display:'flex', alignItems:'center', gap:'12px', animation:'slideDown 0.2s ease-out'}}>
+                                                
+                                                <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
                                                     <div style={{flex:1, position:'relative'}}>
                                                         <span style={{position:'absolute', left:'12px', top:'50%', transform:'translateY(-50%)', fontSize:'14px', fontWeight:'900', color:'var(--g)'}}>{item.curr}</span>
                                                         <input 
                                                             type="number" 
-                                                            value={item.amt} 
+                                                            value={typeof item.amt === 'number' ? Math.round(item.amt * 100) / 100 : item.amt} 
                                                             onChange={e => {
                                                                 const val = e.target.value.replace(/^0+(?=\d)/, '');
                                                                 const newAmt = parseFloat(val) || 0;
                                                                 setLocalSettleEdits(localSettleEdits.map((it, i) => i === idx ? {...it, amt: val === '' ? '' : newAmt} : it));
-                                                            }}
-                                                            onKeyDown={(e) => {
-                                                                if (e.key === 'Enter') {
-                                                                    e.preventDefault();
-                                                                    handleFinalGlobalSettle();
-                                                                }
                                                             }}
                                                             style={{width:'100%', padding:'10px 10px 10px 45px', borderRadius:'12px', border:'2px solid #F1F5F9', background:'#F8FAFC', fontSize:'16px', fontWeight:'900', outline:'none'}} 
                                                         />
@@ -3531,68 +3988,27 @@
                                                     <button className="pill pink" style={{height:'40px', padding:'0 12px', fontSize:'10px'}} onClick={() => {
                                                         setLocalSettleEdits(localSettleEdits.map((it, i) => i === idx ? {...it, amt: it.maxAmt} : it));
                                                     }}>MAX</button>
+                                                    
+                                                    {item.paidBy === me && (
+                                                        <button onClick={() => {
+                                                            const upi = userMetadata[globalSettleData.name]?.upiId;
+                                                            const finalAmt = (parseFloat(item.amt) || 0).toFixed(2);
+                                                            if (upi) {
+                                                                window.location.href = `upi://pay?pa=${upi}&pn=${encodeURIComponent(globalSettleData.name)}&am=${finalAmt}&cu=INR&tn=Divido Settle`;
+                                                            } else {
+                                                                const u = prompt(`Enter UPI ID for ${globalSettleData.name} to Pay Now:`, 'friend@okaxis');
+                                                                if(u) {
+                                                                    setUserMetadata({...userMetadata, [globalSettleData.name]: { ...userMetadata[globalSettleData.name], upiId: u }});
+                                                                    window.location.href = `upi://pay?pa=${u}&pn=${encodeURIComponent(globalSettleData.name)}&am=${finalAmt}&cu=INR&tn=Divido Settle`;
+                                                                }
+                                                            }
+                                                        }} style={{padding:'0 12px', height:'40px', background:'#EFF6FF', color:'#2563EB', border:'1.5px solid #3B82F6', borderRadius:'12px', fontSize:'11px', fontWeight:'950'}} className="hover-up">⚡ Pay Now</button>
+                                                    )}
                                                 </div>
-                                            )}
-                                        </div>
-                                    ))}
-                                </div>
-
-                                {localSettleEdits.some(it => it.selected && it.paidBy !== me) && (
-                                    <div style={{marginBottom:'24px', background:'#F5F3FF', padding:'20px', borderRadius:'24px', border:'2px solid #DDD6FE', animation:'slideUp 0.3s ease-out'}}>
-                                        <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px'}}>
-                                            <div style={{display:'flex', flexDirection:'column'}}>
-                                                <span style={{fontSize:'10px', fontWeight:'950', color:'#6D28D9', textTransform:'uppercase'}}>Direct Payment</span>
-                                                <span style={{fontSize:'13px', fontWeight:'900', color:'#4C1D95'}}>Pay via UPI Apps 📱</span>
                                             </div>
-                                            {userMetadata[globalSettleData.name]?.upiId ? (
-                                                <div className="pill blue" style={{fontSize:'9px', fontWeight:'950', padding:'6px 12px', background:'#1D4ED8', color:'white'}}>Verified: {userMetadata[globalSettleData.name].upiId}</div>
-                                            ) : (
-                                                <button onClick={() => {
-                                                    const u = prompt(`Enter UPI ID for ${globalSettleData.name}:`, 'friend@okaxis');
-                                                    if(u) setUserMetadata({...userMetadata, [globalSettleData.name]: { ...userMetadata[globalSettleData.name], upiId: u }});
-                                                }} style={{fontSize:'9px', fontWeight:'950', padding:'6px 12px', background:'white', border:'1.5px solid #DDD6FE', borderRadius:'10px', cursor:'pointer', color:'#6D28D9'}}>➕ Add UPI ID</button>
-                                            )}
-                                        </div>
-                                        
-                                        <div style={{display:'flex', gap:'12px'}}>
-                                            {[
-                                                {id:'gpay', n:'GPay', c:'#4285F4', i:'https://www.gstatic.com/images/branding/product/1x/gpay_32dp.png'},
-                                                {id:'phonepe', n:'PhonePe', c:'#5F259F', i:'📱'},
-                                                {id:'upi', n:'UPI', c:'#097939', i:'💳'}
-                                            ].map(app => {
-                                                const upi = userMetadata[globalSettleData.name]?.upiId;
-                                                const total = localSettleEdits.filter(it => it.selected && it.paidBy !== me).reduce((acc, it) => acc + (parseFloat(it.amt) || 0), 0);
-                                                const url = `upi://pay?pa=${upi}&pn=${globalSettleData.name}&am=${total}&cu=INR&tn=Divido Settle: ${me} to ${globalSettleData.name}`;
-                                                
-                                                return (
-                                                    <div key={app.id} style={{flex:1, display:'flex', flexDirection:'column', gap:'6px'}}>
-                                                        <button 
-                                                            disabled={!upi}
-                                                            onClick={() => {
-                                                                if(!upi) return;
-                                                                window.location.href = url;
-                                                                if(confirm(`Payment app triggered! 🚀\n\nMark these items as settled in Divido as well?`)) handleFinalGlobalSettle();
-                                                            }}
-                                                            className="hover-up btn-pay"
-                                                            style={{
-                                                                width:'100%', height:'50px', background: app.c, color:'white', border:'none', borderRadius:'16px', 
-                                                                display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', fontWeight:'950', fontSize:'12px',
-                                                                cursor: upi ? 'pointer' : 'not-allowed', opacity: upi ? 1 : 0.4, transition:'0.3s all',
-                                                                boxShadow: upi ? `0 8px 15px ${app.c}44` : 'none'
-                                                            }}
-                                                        >
-                                                            {app.id === 'gpay' ? <img src={app.i} style={{width:'18px', filter:'brightness(0) invert(1)'}} /> : <span>{app.i}</span>}
-                                                            {app.n}
-                                                        </button>
-                                                        {app.id === 'upi' && upi && (
-                                                            <button onClick={() => { navigator.clipboard.writeText(upi); alert('UPI ID Copied! 📋'); }} style={{background:'none', border:'none', fontSize:'9px', fontWeight:'900', color:'#6D28D9', cursor:'pointer', opacity:0.6}}>📋 Copy ID</button>
-                                                        )}
-                                                    </div>
-                                                );
-                                            })}
-                                        </div>
-                                    </div>
-                                )}
+                                        );
+                                    })}
+                                </div>
 
                                 <div style={{display:'flex', gap:'12px', flexDirection:'column'}}>
                                     <div style={{display:'flex', gap:'12px'}}>
@@ -3639,6 +4055,41 @@
                             <span>Profile</span>
                         </div>
                     </nav>
+
+                    <PremiumConfirm 
+                        show={confirmState.show} 
+                        title={confirmState.title} 
+                        desc={confirmState.desc} 
+                        type={confirmState.type}
+                        onConfirm={confirmState.onConfirm} 
+                        onCancel={() => setConfirmState({ show: false })} 
+                    />
+
+                    {undoStack.length > 0 && (
+                        <div style={{
+                            position:'fixed', bottom:'100px', left:'50%', transform:'translateX(-50%)', 
+                            background:'#1E293B', color:'white', padding:'12px 20px', borderRadius:'20px', 
+                            display:'flex', alignItems:'center', gap:'16px', boxShadow:'0 20px 40px rgba(0,0,0,0.3)',
+                            zIndex: 10000, animation:'slideUp 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275)'
+                        }}>
+                            <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
+                                <span style={{fontSize:'20px'}}>🗑️</span>
+                                <div style={{display:'flex', flexDirection:'column'}}>
+                                    <span style={{fontSize:'12px', fontWeight:'900'}}>Entry Deleted</span>
+                                    <span style={{fontSize:'10px', opacity:0.6, maxWidth:'120px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{undoStack[0].item.title}</span>
+                                </div>
+                            </div>
+                            <button 
+                                onClick={performUndo}
+                                style={{
+                                    background:'#FCD34D', color:'#92400E', border:'none', padding:'8px 16px', 
+                                    borderRadius:'12px', fontWeight:'950', fontSize:'11px', cursor:'pointer'
+                                }}
+                            >
+                                UNDO ↩️
+                            </button>
+                        </div>
+                    )}
                 </div>
             );
         };
